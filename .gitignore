@@ -1,0 +1,7 @@
+# Xcode 构建产物
+Build/
+DerivedData/
+
+# Xcode 用户级配置
+*.xcuserstate
+xcuserdata/
