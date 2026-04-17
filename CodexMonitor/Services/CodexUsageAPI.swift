@@ -7,8 +7,8 @@
 
 import Foundation
 
-/// 专门负责向 Codex 用量接口发起请求。
-/// 这里尽量把请求构造细节封装起来，让上层状态管理只关心“拿到结果”或“拿到错误”。
+/// 负责请求 ChatGPT Web 侧的用量与订阅接口。
+/// 这一版实现不再依赖浏览器导出的 curl，而是直接复用 `auth.json` 里的 `access_token` 与 `chatgpt_account_id`。
 final class CodexUsageAPI {
     private let session: URLSession
 
@@ -21,8 +21,10 @@ final class CodexUsageAPI {
         self.session = URLSession(configuration: configuration)
     }
 
-    func fetchUsage(with credential: CodexAccountCredential) async throws -> AccountUsageSnapshot {
-        let request = try makeUsageRequest(with: credential)
+    /// 拉取用量快照。
+    /// 请求头与 `codex-auth` 保持同一思路：`Authorization + ChatGPT-Account-Id + User-Agent`。
+    func fetchUsage(with context: CodexAuthContext) async throws -> AccountUsageSnapshot {
+        let request = try makeUsageRequest(with: context)
         let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -47,13 +49,9 @@ final class CodexUsageAPI {
     }
 
     /// 拉取订阅信息。
-    /// 与用量接口共用同一套认证头，只是额外需要 `account_id` 作为查询参数。
-    func fetchSubscription(with credential: CodexAccountCredential) async throws -> AccountSubscriptionSnapshot {
-        guard let accountID = credential.inferredAccountID else {
-            throw CodexUsageAPIError.invalidConfiguration("无法从当前账号凭据中解析 account_id。")
-        }
-
-        let request = try makeSubscriptionRequest(with: credential, accountID: accountID)
+    /// 订阅接口要求 query 中包含 `account_id`，值直接使用当前 `chatgpt_account_id`。
+    func fetchSubscription(with context: CodexAuthContext) async throws -> AccountSubscriptionSnapshot {
+        let request = try makeSubscriptionRequest(with: context)
         let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -77,114 +75,134 @@ final class CodexUsageAPI {
         }
     }
 
-    /// 根据用户录入的账号配置，组装一次完整的用量请求。
-    private func makeUsageRequest(with credential: CodexAccountCredential) throws -> URLRequest {
+    /// 拉取当前用户作用域下的账号名称信息。
+    /// 这一步对齐 `codex-auth` 的 `accounts/check` 行为，主要用于把 Team 工作区名称补齐到 registry。
+    func fetchAccountNames(with context: CodexAuthContext) async throws -> [CodexAccountNameEntry] {
+        let request = try makeAccountNameRequest(with: context)
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexUsageAPIError.invalidResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let responseText = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw CodexUsageAPIError.requestFailed(
+                statusCode: httpResponse.statusCode,
+                message: responseText
+            )
+        }
+
+        do {
+            let decoder = JSONDecoder()
+            let payload = try decoder.decode(CodexAccountCheckResponse.self, from: data)
+            return payload.accountEntries
+        } catch {
+            throw CodexUsageAPIError.decodingFailed(error)
+        }
+    }
+
+    /// 构造用量请求。
+    private func makeUsageRequest(with context: CodexAuthContext) throws -> URLRequest {
         guard let url = URL(string: "https://chatgpt.com/backend-api/wham/usage") else {
             throw CodexUsageAPIError.invalidURL
         }
 
-        return try makeAuthorizedRequest(
-            url: url,
-            credential: credential,
-            referer: "https://chatgpt.com/codex/cloud/settings/usage",
-            targetPath: "/backend-api/wham/usage",
-            targetRoute: "/backend-api/wham/usage"
-        )
+        return makeAuthorizedRequest(url: url, context: context)
     }
 
-    /// 组装订阅请求。
-    private func makeSubscriptionRequest(with credential: CodexAccountCredential, accountID: String) throws -> URLRequest {
-        guard
-            var components = URLComponents(string: "https://chatgpt.com/backend-api/subscriptions")
-        else {
+    /// 构造订阅请求。
+    private func makeSubscriptionRequest(with context: CodexAuthContext) throws -> URLRequest {
+        guard var components = URLComponents(string: "https://chatgpt.com/backend-api/subscriptions") else {
             throw CodexUsageAPIError.invalidURL
         }
 
         components.queryItems = [
-            URLQueryItem(name: "account_id", value: accountID)
+            URLQueryItem(name: "account_id", value: context.chatgptAccountID)
         ]
 
         guard let url = components.url else {
             throw CodexUsageAPIError.invalidURL
         }
 
-        return try makeAuthorizedRequest(
-            url: url,
-            credential: credential,
-            referer: "https://chatgpt.com/codex/cloud/settings/usage",
-            targetPath: "/backend-api/subscriptions",
-            targetRoute: "/backend-api/subscriptions"
-        )
+        return makeAuthorizedRequest(url: url, context: context)
     }
 
-    /// 所有 ChatGPT Web 接口共用的一套基础认证头组装逻辑。
-    /// 把公共部分收敛到这里，可以避免用量接口和订阅接口后续出现头部不一致。
-    private func makeAuthorizedRequest(
-        url: URL,
-        credential: CodexAccountCredential,
-        referer: String,
-        targetPath: String,
-        targetRoute: String
-    ) throws -> URLRequest {
-
-        let authorization = credential.normalizedAuthorizationHeader
-        let cookie = credential.cookie.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard authorization.isEmpty == false else {
-            throw CodexUsageAPIError.invalidConfiguration("请填写 Authorization Bearer Token。")
+    /// 构造工作区名称刷新请求。
+    private func makeAccountNameRequest(with context: CodexAuthContext) throws -> URLRequest {
+        guard let url = URL(string: "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27") else {
+            throw CodexUsageAPIError.invalidURL
         }
 
-        guard cookie.isEmpty == false else {
-            throw CodexUsageAPIError.invalidConfiguration("请填写 Cookie。")
-        }
+        return makeAuthorizedRequest(url: url, context: context)
+    }
 
+    /// 统一的授权请求头。
+    /// 这里刻意保持简洁，不再继续依赖 Cookie、Session ID 等浏览器态 Header。
+    private func makeAuthorizedRequest(url: URL, context: CodexAuthContext) -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.setValue("*/*", forHTTPHeaderField: "accept")
-        request.setValue("no-cache", forHTTPHeaderField: "cache-control")
-        request.setValue("no-cache", forHTTPHeaderField: "pragma")
-        request.setValue(referer, forHTTPHeaderField: "referer")
-        request.setValue(targetPath, forHTTPHeaderField: "x-openai-target-path")
-        request.setValue(targetRoute, forHTTPHeaderField: "x-openai-target-route")
-        request.setValue(authorization, forHTTPHeaderField: "authorization")
-        request.setValue(cookie, forHTTPHeaderField: "cookie")
-        request.setValue(nonEmptyValue(credential.language, fallback: "zh-CN"), forHTTPHeaderField: "oai-language")
-        request.setValue(nonEmptyValue(credential.userAgent, fallback: CodexAccountCredential.defaultUserAgent), forHTTPHeaderField: "user-agent")
-
-        if credential.clientBuildNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            request.setValue(credential.clientBuildNumber, forHTTPHeaderField: "oai-client-build-number")
-        }
-
-        if credential.clientVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            request.setValue(credential.clientVersion, forHTTPHeaderField: "oai-client-version")
-        }
-
-        if credential.deviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            request.setValue(credential.deviceID, forHTTPHeaderField: "oai-device-id")
-        }
-
-        if credential.sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            request.setValue(credential.sessionID, forHTTPHeaderField: "oai-session-id")
-        }
-
-        // 允许用户补充一些暂未内建的 Header，避免服务端策略变化后必须重新发版。
-        for (key, value) in credential.parsedAdditionalHeaders {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(context.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(context.chatgptAccountID, forHTTPHeaderField: "ChatGPT-Account-Id")
+        request.setValue(Self.browserUserAgent, forHTTPHeaderField: "User-Agent")
         return request
     }
 
-    private func nonEmptyValue(_ candidate: String, fallback: String) -> String {
-        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? fallback : trimmed
+    /// 参考 `codex-auth` 默认使用的桌面浏览器 UA。
+    private static let browserUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+}
+
+/// `accounts/check` 返回的单个账号名称条目。
+/// 这里只保留 GUI 真正需要的两个字段：`account_id` 与 `name`。
+struct CodexAccountNameEntry: Decodable, Equatable {
+    let accountID: String
+    let accountName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case accountID = "account_id"
+        case accountName = "name"
+    }
+}
+
+/// `accounts/check` 顶层响应中的单条账号包装结构。
+private struct CodexAccountCheckAccountWrapper: Decodable {
+    let account: CodexAccountNameEntry?
+}
+
+/// `accounts/check` 返回格式是一个动态 key 的对象。
+/// 这里把 `default` 之外的每个条目解包成 `[CodexAccountNameEntry]`，方便后续直接按账号 ID 回写。
+private struct CodexAccountCheckResponse: Decodable {
+    let accounts: [String: CodexAccountCheckAccountWrapper]
+
+    var accountEntries: [CodexAccountNameEntry] {
+        accounts.compactMap { key, value in
+            guard key != "default" else {
+                return nil
+            }
+
+            guard let entry = value.account else {
+                return nil
+            }
+
+            let normalizedAccountID = entry.accountID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard normalizedAccountID.isEmpty == false else {
+                return nil
+            }
+
+            let normalizedName = entry.accountName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return CodexAccountNameEntry(
+                accountID: normalizedAccountID,
+                accountName: normalizedName?.isEmpty == false ? normalizedName : nil
+            )
+        }
     }
 }
 
 enum CodexUsageAPIError: LocalizedError {
     case invalidURL
     case invalidResponse
-    case invalidConfiguration(String)
     case requestFailed(statusCode: Int, message: String?)
     case decodingFailed(Error)
 
@@ -194,8 +212,6 @@ enum CodexUsageAPIError: LocalizedError {
             return "接口地址无效。"
         case .invalidResponse:
             return "服务端返回了无法识别的响应。"
-        case .invalidConfiguration(let message):
-            return message
         case .requestFailed(let statusCode, let message):
             if let message, message.isEmpty == false {
                 return "请求失败（HTTP \(statusCode)）：\(message)"

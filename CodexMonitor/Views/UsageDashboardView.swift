@@ -5,6 +5,7 @@
 //  Created by Codex on 2026/4/13.
 //
 
+import AppKit
 import SwiftUI
 
 /// 面板展示模式。
@@ -20,9 +21,6 @@ struct UsageDashboardView: View {
     @ObservedObject var store: AppState
     let displayMode: UsageDashboardDisplayMode
 
-    @Environment(\.openWindow) private var openWindow
-    @EnvironmentObject private var editorCoordinator: AccountEditorCoordinator
-
     var body: some View {
         VStack(spacing: layout.outerSpacing) {
             headerSection
@@ -35,16 +33,29 @@ struct UsageDashboardView: View {
                         ForEach(store.accounts) { account in
                             AccountCardView(
                                 profile: account,
-                                runtimeState: store.runtimeState(for: account.id),
+                                runtimeState: store.runtimeState(for: account.accountKey),
+                                isActive: store.isActiveAccount(account.accountKey),
                                 displayMode: displayMode,
-                                onToggleEnabled: { store.setAccountEnabled(account.id, isEnabled: $0) },
                                 onRefresh: {
                                     Task {
-                                        await store.refreshAccount(account.id)
+                                        await store.refreshAccount(account.accountKey)
+                                    }
+                                },
+                                onSwitch: {
+                                    do {
+                                        try store.switchAccount(account.accountKey)
+                                        return true
+                                    } catch {
+                                        showOperationErrorAlert(message: error.localizedDescription)
+                                        return false
                                     }
                                 },
                                 onDelete: {
-                                    store.deleteAccount(account.id)
+                                    do {
+                                        try store.deleteAccount(account.accountKey)
+                                    } catch {
+                                        showOperationErrorAlert(message: error.localizedDescription)
+                                    }
                                 }
                             )
                         }
@@ -85,12 +96,13 @@ struct UsageDashboardView: View {
                         .help("刷新全部账号")
 
                         Button {
-                            openEditor(for: nil)
+                            toggleLoginFlow()
                         } label: {
-                            Label("添加账号", systemImage: "plus")
+                            Label(store.isLaunchingLogin ? "取消登录" : "添加账号", systemImage: store.isLaunchingLogin ? "xmark.circle" : "person.crop.circle.badge.plus")
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                        .help(store.isLaunchingLogin ? "取消当前浏览器登录流程" : "打开浏览器登录 Codex 账号")
                     }
                 }
 
@@ -120,11 +132,12 @@ struct UsageDashboardView: View {
                         .buttonStyle(.bordered)
 
                         Button {
-                            openEditor(for: nil)
+                            toggleLoginFlow()
                         } label: {
-                            Label("添加账号", systemImage: "plus")
+                            Label(store.isLaunchingLogin ? "取消登录" : "添加账号", systemImage: store.isLaunchingLogin ? "xmark.circle" : "person.crop.circle.badge.plus")
                         }
                         .buttonStyle(.borderedProminent)
+                        .help(store.isLaunchingLogin ? "取消当前浏览器登录流程" : "打开浏览器登录 Codex 账号")
                     }
                 }
             }
@@ -135,19 +148,23 @@ struct UsageDashboardView: View {
     /// 空状态面板。
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("还没有配置账号")
+            Text(store.isLaunchingLogin ? "正在等待登录完成" : "未发现账号")
                 .font(.system(size: displayMode == .menuBar ? 16 : 18, weight: .bold))
                 .foregroundStyle(palette.primaryText)
 
-            Text("建议直接从浏览器网络面板复制完整 curl 请求，在添加账号弹窗中一键解析。账号凭据会保存在系统钥匙串，方便你在多个 Codex 账号之间比较剩余额度。")
+            Text(
+                store.isLaunchingLogin
+                ? "浏览器登录完成后账号会自动出现；如果暂时不登录，可以点击下方按钮取消。"
+                : "会自动读取 `~/.codex` 里的已有账号。点击右上角“添加账号”即可直接走官方登录。"
+            )
                 .font(.system(size: displayMode == .menuBar ? 12 : 13))
                 .foregroundStyle(palette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
             Button {
-                openEditor(for: nil)
+                toggleLoginFlow()
             } label: {
-                Label("立即添加第一个账号", systemImage: "plus.circle.fill")
+                Label(store.isLaunchingLogin ? "取消登录" : "立即添加第一个账号", systemImage: store.isLaunchingLogin ? "xmark.circle" : "person.crop.circle.badge.plus")
             }
             .buttonStyle(.borderedProminent)
         }
@@ -165,15 +182,9 @@ struct UsageDashboardView: View {
     /// 底部辅助信息。
     private var footerSection: some View {
         HStack {
-            if displayMode == .menuBar {
-                Text("凭据保存在系统钥匙串")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(palette.secondaryText)
-            } else {
-                Text("敏感凭据保存在系统钥匙串")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(palette.secondaryText)
-            }
+            Text("已连接 \(compactCodexHomePath)")
+                .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .medium))
+                .foregroundStyle(palette.secondaryText)
 
             Spacer()
 
@@ -188,47 +199,63 @@ struct UsageDashboardView: View {
 
     /// 菜单栏标题摘要。
     private var summaryText: String {
-        let enabledCount = store.accounts.filter(\.isEnabled).count
-        let successCount = store.accounts.filter { store.runtimeState(for: $0.id).snapshot != nil }.count
-        return "\(store.accounts.count) 个账号，\(enabledCount) 个启用，\(successCount) 个已拉取成功"
+        if let activeAccount = store.accounts.first(where: { $0.accountKey == store.activeAccountKey }) {
+            return "\(store.accounts.count) 个账号，当前使用 \(activeAccount.displayName)"
+        }
+        return store.isLaunchingLogin ? "浏览器登录进行中" : "\(store.accounts.count) 个账号"
     }
 
     /// 面板底色。
     /// 改用更稳定的浅暖灰，而不是大面积低对比白灰渐变，避免文字被背景吃掉。
     private var panelBackground: some View {
-        LinearGradient(
-            colors: [
-                palette.panelTop,
-                palette.panelBottom
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        palette.panelBackground
     }
 
     /// 卡片底色。
     private var cardBackground: some ShapeStyle {
-        LinearGradient(
-            colors: [
-                palette.cardTop,
-                palette.cardBottom
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        palette.cardBackground
     }
 
-    /// 打开独立账号编辑窗口。
-    /// 菜单栏窗口即使随后失焦关闭，编辑窗口仍会继续存在，不会中断操作。
-    private func openEditor(for accountID: UUID?) {
-        editorCoordinator.present(draft: store.draft(for: accountID))
-
-        DispatchQueue.main.async {
-            // 菜单栏窗口在按钮点击后会立刻进入失焦关闭流程。
-            // 把真正的开窗动作延后到下一轮主线程，可以确保独立编辑窗口仍然稳定弹出。
-            openWindow(id: "account-editor")
-            NSApp.activate(ignoringOtherApps: true)
+    /// 登录按钮的统一入口。
+    /// 未登录时后台启动官方 `codex login` 并打开浏览器；登录中再次点击则取消当前流程。
+    private func toggleLoginFlow() {
+        if store.isLaunchingLogin {
+            store.cancelLogin()
+        } else {
+            launchLogin()
         }
+    }
+
+    /// 直接触发官方浏览器登录。
+    /// 菜单栏里只保留一个入口，避免再弹独立编辑窗口增加理解成本。
+    private func launchLogin() {
+        do {
+            try store.launchLogin(deviceAuth: false)
+        } catch {
+            showOperationErrorAlert(message: error.localizedDescription)
+        }
+    }
+
+    /// 底部路径统一压缩成更短的 `~/.codex` 风格。
+    /// 用户只需要知道当前是否已经指向正确目录，不需要看一整串绝对路径。
+    private var compactCodexHomePath: String {
+        let actualHomePath = NSHomeDirectoryForUser(NSUserName()) ?? FileManager.default.homeDirectoryForCurrentUser.path
+        if store.codexHomePath.hasPrefix(actualHomePath) {
+            return "~" + store.codexHomePath.dropFirst(actualHomePath.count)
+        }
+        return store.codexHomePath
+    }
+
+    /// 菜单栏宿主下不适合挂 SwiftUI 的复杂对话框。
+    /// 简单错误直接走 `NSAlert`，可以确保一定弹得出来、也一定能点击。
+    private func showOperationErrorAlert(message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "操作失败"
+        alert.informativeText = message
+        alert.addButton(withTitle: "知道了")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     /// 统一的排版参数。
@@ -245,15 +272,17 @@ struct UsageDashboardView: View {
 /// 单账号卡片。
 /// 菜单栏模式采用更扁平的结构，减少垂直空间占用。
 private struct AccountCardView: View {
-    let profile: CodexAccountProfile
+    let profile: CodexRegistryAccount
     let runtimeState: AccountRuntimeState
+    let isActive: Bool
     let displayMode: UsageDashboardDisplayMode
-    let onToggleEnabled: (Bool) -> Void
     let onRefresh: () -> Void
+    let onSwitch: () -> Bool
     let onDelete: () -> Void
 
-    /// 删除操作需要二次确认，避免在菜单栏里误触后直接丢失账号。
-    @State private var isShowingDeleteConfirmation = false
+    /// 当前账号卡片是否处于鼠标悬停状态。
+    /// 操作按钮默认隐藏，只在 hover 时显示，减少菜单栏面板里的常驻视觉噪音。
+    @State private var isHoveringCard = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: layout.sectionSpacing) {
@@ -272,25 +301,23 @@ private struct AccountCardView: View {
             footer
         }
         .padding(layout.cardPadding)
-        .background(cardBackground)
+        .frame(height: layout.cardHeight, alignment: .topLeading)
+        .background(accountCardBackground)
         .overlay(
             RoundedRectangle(cornerRadius: layout.cardCornerRadius, style: .continuous)
-                .stroke(palette.cardBorder, lineWidth: 1)
+                .stroke(accountCardBorderColor, lineWidth: isActive ? 1.6 : 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: layout.cardCornerRadius, style: .continuous))
         .shadow(
-            color: displayMode == .menuBar ? Color.black.opacity(0.04) : Color.black.opacity(0.08),
-            radius: displayMode == .menuBar ? 6 : 12,
+            color: accountCardShadowColor,
+            radius: accountCardShadowRadius,
             x: 0,
             y: 4
         )
-        .alert("确认删除账号？", isPresented: $isShowingDeleteConfirmation) {
-            Button("取消", role: .cancel) {}
-            Button("删除", role: .destructive) {
-                onDelete()
+        .onHover { isHovering in
+            withAnimation(.easeOut(duration: 0.12)) {
+                isHoveringCard = isHovering
             }
-        } message: {
-            Text("删除后会同时移除该账号的本地配置和系统钥匙串凭据：\(profile.displayName)")
         }
     }
 
@@ -306,32 +333,19 @@ private struct AccountCardView: View {
 
                     if let snapshot = runtimeState.snapshot {
                         planChip(text: snapshot.planType)
+
+                        if shouldShowAnnualBadge(for: snapshot.planType) {
+                            annualChip
+                        }
+                    }
+
+                    if isActive {
+                        activeStateChip
                     }
 
                     Spacer(minLength: 4)
 
-                    Toggle("", isOn: Binding(
-                        get: { profile.isEnabled },
-                        set: onToggleEnabled
-                    ))
-                    .labelsHidden()
-                    .toggleStyle(.checkbox)
-
-                    Button {
-                        onRefresh()
-                    } label: {
-                        refreshActionIcon
-                    }
-                    .buttonStyle(.borderless)
-                    .help("立即刷新")
-
-                    Button {
-                        isShowingDeleteConfirmation = true
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("删除账号")
+                    compactActionControls
                 }
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(palette.actionText)
@@ -344,50 +358,32 @@ private struct AccountCardView: View {
                                 .foregroundStyle(palette.primaryText)
                                 .lineLimit(1)
 
-                            statusChip
+                            if isActive {
+                                activeStateChip
+                            }
                         }
 
-                        Text("每 \(profile.refreshIntervalSeconds) 秒自动刷新")
+                        if let secondaryIdentityText = profile.secondaryIdentityText {
+                            Text(secondaryIdentityText)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(palette.secondaryText)
+                                .lineLimit(1)
+                        } else {
+                            Text(profile.email)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(palette.secondaryText)
+                                .lineLimit(1)
+                        }
+
+                        Text("直接复用 codex-auth 的 auth 快照与 registry")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(palette.secondaryText)
-
-                        if profile.note.isEmpty == false {
-                            Text(profile.note)
-                                .font(.system(size: 12))
-                                .foregroundStyle(palette.secondaryText)
-                                .lineLimit(2)
-                        }
                     }
 
                     Spacer(minLength: 8)
 
                     VStack(alignment: .trailing, spacing: 8) {
-                        Toggle("", isOn: Binding(
-                            get: { profile.isEnabled },
-                            set: onToggleEnabled
-                        ))
-                        .labelsHidden()
-                        .toggleStyle(.checkbox)
-
-                        HStack(spacing: 8) {
-                            Button {
-                                onRefresh()
-                            } label: {
-                                refreshActionIcon
-                            }
-                            .buttonStyle(.borderless)
-                            .help("立即刷新")
-
-                            Button {
-                                isShowingDeleteConfirmation = true
-                            } label: {
-                                Image(systemName: "trash")
-                            }
-                            .buttonStyle(.borderless)
-                            .help("删除账号")
-                        }
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(palette.actionText)
+                        regularActionControls
                     }
                 }
             }
@@ -398,7 +394,7 @@ private struct AccountCardView: View {
     private func metricsSection(snapshot: AccountUsageSnapshot) -> some View {
         VStack(alignment: .leading, spacing: layout.sectionSpacing) {
             if displayMode == .menuBar {
-                if let identityText = compactIdentityText(snapshot: snapshot) {
+                if let identityText = profile.secondaryIdentityText ?? compactIdentityText(snapshot: snapshot) {
                     HStack(spacing: 6) {
                         Text(identityText)
                             .font(.system(size: 10, weight: .medium))
@@ -411,14 +407,17 @@ private struct AccountCardView: View {
             } else {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(snapshot.email)
+                        Text(profile.secondaryIdentityText ?? snapshot.email)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(palette.secondaryText)
                             .lineLimit(1)
 
                         HStack(spacing: 8) {
                             planChip(text: snapshot.planType)
-                            availabilityChip(snapshot: snapshot)
+
+                            if shouldShowAnnualBadge(for: snapshot.planType) {
+                                annualChip
+                            }
                         }
                     }
 
@@ -445,7 +444,7 @@ private struct AccountCardView: View {
                 .font(.system(size: displayMode == .menuBar ? 12 : 13, weight: .medium))
                 .foregroundStyle(palette.primaryText)
 
-            Text(displayMode == .menuBar ? "检查 Cookie / Token 是否完整" : "请检查 Cookie、Bearer Token 和高级请求头是否完整。")
+            Text(displayMode == .menuBar ? "检查 auth 快照是否已失效" : "如果这个账号最近出现 401，请先切换到该账号并在官方 Codex 客户端重新登录。")
                 .font(.system(size: displayMode == .menuBar ? 11 : 12))
                 .foregroundStyle(palette.secondaryText)
         }
@@ -543,10 +542,7 @@ private struct AccountCardView: View {
             return nil
         }
 
-        let calendar = Calendar.current
-        let startOfToday = calendar.startOfDay(for: Date())
-        let startOfExpiryDay = calendar.startOfDay(for: activeUntil)
-        let remainingDays = calendar.dateComponents([.day], from: startOfToday, to: startOfExpiryDay).day ?? Int.max
+        let remainingDays = subscriptionRemainingDays ?? Int.max
 
         let text: String
         if displayMode == .menuBar {
@@ -578,15 +574,14 @@ private struct AccountCardView: View {
         )
     }
 
-    /// 启用状态标签。
-    /// 使用深绿色文字而不是高亮绿色正文，提升对比度同时保留状态语义。
-    private var statusChip: some View {
-        Text(profile.isEnabled ? "启用中" : "已暂停")
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(profile.isEnabled ? palette.successText : palette.secondaryText)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(profile.isEnabled ? palette.successBackground : palette.mutedBackground)
+    /// 活动状态标签。
+    private var activeStateChip: some View {
+        Text("当前使用")
+            .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .bold))
+            .foregroundStyle(palette.successText)
+            .padding(.horizontal, displayMode == .menuBar ? 6 : 8)
+            .padding(.vertical, displayMode == .menuBar ? 2 : 4)
+            .background(palette.successBackground)
             .clipShape(Capsule())
     }
 
@@ -598,6 +593,122 @@ private struct AccountCardView: View {
             .padding(.vertical, displayMode == .menuBar ? 2 : 4)
             .background(palette.accentBackground)
             .clipShape(Capsule())
+    }
+
+    /// 年度会员标签。
+    /// 样式沿用套餐 badge 的高度和圆角，仅更换为更温和的金色语义，避免和“当前使用”的绿色状态混淆。
+    private var annualChip: some View {
+        Text("年度")
+            .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .bold))
+            .foregroundStyle(palette.warningText)
+            .padding(.horizontal, displayMode == .menuBar ? 6 : 8)
+            .padding(.vertical, displayMode == .menuBar ? 2 : 4)
+            .background(palette.warningBackground)
+            .clipShape(Capsule())
+    }
+
+    /// 菜单栏紧凑模式下的操作按钮组。
+    /// 默认隐藏但保留布局空间，鼠标移入时淡入，避免 hover 时卡片宽度和文字截断发生跳变。
+    private var compactActionControls: some View {
+        HStack(spacing: 6) {
+            if isActive == false {
+                Button("切换") {
+                    switchAccountAndNotify()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .help("切换到这个账号")
+            }
+
+            Button {
+                onRefresh()
+            } label: {
+                refreshActionIcon
+            }
+            .buttonStyle(.borderless)
+            .help("立即刷新")
+
+            Button {
+                confirmDeleteAccount()
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("删除账号")
+        }
+        .opacity(actionControlsOpacity)
+        .allowsHitTesting(shouldShowActionControls)
+        .animation(.easeOut(duration: 0.12), value: shouldShowActionControls)
+    }
+
+    /// 主窗口密度下的操作按钮组。
+    /// 虽然当前产品以菜单栏为主，但这里保持同一套 hover 行为，避免未来恢复主窗口时体验不一致。
+    private var regularActionControls: some View {
+        HStack(spacing: 8) {
+            if isActive == false {
+                Button {
+                    switchAccountAndNotify()
+                } label: {
+                    Label("切换", systemImage: "arrow.left.arrow.right.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("切换到这个账号")
+            }
+
+            Button {
+                onRefresh()
+            } label: {
+                refreshActionIcon
+            }
+            .buttonStyle(.borderless)
+            .help("立即刷新")
+
+            Button {
+                confirmDeleteAccount()
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("删除账号")
+        }
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(palette.actionText)
+        .opacity(actionControlsOpacity)
+        .allowsHitTesting(shouldShowActionControls)
+        .animation(.easeOut(duration: 0.12), value: shouldShowActionControls)
+    }
+
+    /// 刷新中时保留按钮可见，用户能明确看到当前账号正在执行操作。
+    private var shouldShowActionControls: Bool {
+        isHoveringCard || runtimeState.isRefreshing
+    }
+
+    /// 透明度单独拆出，后续如果要做更弱的常驻提示，只需要改这里。
+    private var actionControlsOpacity: Double {
+        shouldShowActionControls ? 1 : 0
+    }
+
+    /// 判断是否需要展示“年度”标签。
+    /// 用户侧规则很直接：PLUS 账号距离订阅到期超过 31 天，就认为是年度会员。
+    private func shouldShowAnnualBadge(for planType: String) -> Bool {
+        guard compactPlanText(planType).uppercased() == "PLUS",
+              let remainingDays = subscriptionRemainingDays else {
+            return false
+        }
+
+        return remainingDays > 31
+    }
+
+    /// 订阅剩余天数统一集中计算，避免 footer 到期颜色和年度 badge 各自维护一套日期逻辑。
+    private var subscriptionRemainingDays: Int? {
+        guard let activeUntil = runtimeState.subscriptionSnapshot?.activeUntil else {
+            return nil
+        }
+
+        let calendar = Calendar.current
+        let startOfToday = calendar.startOfDay(for: Date())
+        let startOfExpiryDay = calendar.startOfDay(for: activeUntil)
+        return calendar.dateComponents([.day], from: startOfToday, to: startOfExpiryDay).day
     }
 
     /// 套餐徽标在菜单栏模式下缩成更短的文案，减少横向占位。
@@ -614,34 +725,6 @@ private struct AccountCardView: View {
         return normalized
     }
 
-    private func availabilityChip(snapshot: AccountUsageSnapshot) -> some View {
-        let text: String
-        let textColor: Color
-        let backgroundColor: Color
-
-        if snapshot.limitReached {
-            text = "已触发限制"
-            textColor = palette.errorText
-            backgroundColor = palette.errorBackground
-        } else if snapshot.allowed {
-            text = "可继续使用"
-            textColor = palette.successText
-            backgroundColor = palette.successBackground
-        } else {
-            text = "等待确认"
-            textColor = palette.secondaryText
-            backgroundColor = palette.mutedBackground
-        }
-
-        return Text(text)
-            .font(.system(size: displayMode == .menuBar ? 10 : 11, weight: .bold))
-            .foregroundStyle(textColor)
-            .padding(.horizontal, displayMode == .menuBar ? 7 : 8)
-            .padding(.vertical, displayMode == .menuBar ? 3 : 4)
-            .background(backgroundColor)
-            .clipShape(Capsule())
-    }
-
     private var layout: DashboardLayout {
         DashboardLayout(displayMode: displayMode)
     }
@@ -651,14 +734,42 @@ private struct AccountCardView: View {
     }
 
     private var cardBackground: some ShapeStyle {
-        LinearGradient(
-            colors: [
-                palette.cardTop,
-                palette.cardBottom
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        palette.cardBackground
+    }
+
+    /// 账号卡片背景。
+    /// hover 时使用更亮、更冷一点的底色，让用户能明显感知当前鼠标所在卡片。
+    private var accountCardBackground: Color {
+        isHoveringCard ? palette.cardHoverBackground : palette.cardBackground
+    }
+
+    /// 账号卡片描边颜色。
+    /// 活动账号仍保留蓝色强调；普通账号 hover 时提高描边对比度。
+    private var accountCardBorderColor: Color {
+        if isActive {
+            return palette.accentText.opacity(isHoveringCard ? 0.65 : 0.45)
+        }
+
+        return isHoveringCard ? palette.cardHoverBorder : palette.cardBorder
+    }
+
+    /// 账号卡片阴影颜色。
+    /// hover 时稍微增强阴影，不改变布局尺寸，只增强层级。
+    private var accountCardShadowColor: Color {
+        if displayMode == .menuBar {
+            return Color.black.opacity(isHoveringCard ? 0.08 : 0.04)
+        }
+
+        return Color.black.opacity(isHoveringCard ? 0.12 : 0.08)
+    }
+
+    /// 账号卡片阴影半径。
+    private var accountCardShadowRadius: CGFloat {
+        if isActive {
+            return displayMode == .menuBar ? (isHoveringCard ? 12 : 10) : (isHoveringCard ? 16 : 14)
+        }
+
+        return displayMode == .menuBar ? (isHoveringCard ? 9 : 6) : (isHoveringCard ? 14 : 12)
     }
 
     /// 刷新图标与转圈态使用固定尺寸容器，避免切换状态时撑高卡片、造成面板抖动。
@@ -675,6 +786,39 @@ private struct AccountCardView: View {
             }
         }
         .frame(width: 14, height: 14)
+    }
+
+    /// 菜单栏弹窗会在失焦时自动关闭，SwiftUI `.alert` 挂在其上面会导致确认框无法交互。
+    /// 这里改为直接弹原生 `NSAlert`，让确认流程脱离菜单栏宿主窗口，避免点击即消失。
+    private func confirmDeleteAccount() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "确认删除账号？"
+        alert.informativeText = "删除后会同时移除该账号的 registry 记录与 auth 快照：\(profile.displayName)"
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+
+        // 先把应用切到前台，确保无 Dock 菜单栏应用也能稳定弹出系统确认框。
+        NSApp.activate(ignoringOtherApps: true)
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            onDelete()
+        }
+    }
+
+    /// 切换账号后立即提醒用户重启 Codex 客户端。
+    private func switchAccountAndNotify() {
+        guard onSwitch() else {
+            return
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "已切换到 \(profile.displayName)"
+        alert.informativeText = "新的账号快照已经写回到 `~/.codex/auth.json`。请重启 Codex / Codex App，让客户端主进程重新读取登录态。"
+        alert.addButton(withTitle: "知道了")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 }
 
@@ -838,6 +982,7 @@ private struct DashboardLayout {
     let sectionSpacing: CGFloat
     let metricSpacing: CGFloat
     let cardCornerRadius: CGFloat
+    let cardHeight: CGFloat?
 
     init(displayMode: UsageDashboardDisplayMode) {
         switch displayMode {
@@ -854,53 +999,110 @@ private struct DashboardLayout {
             sectionSpacing = 12
             metricSpacing = 10
             cardCornerRadius = 18
+            cardHeight = nil
         case .menuBar:
             topPadding = 8
             bottomPadding = 6
             horizontalPadding = 9
             outerSpacing = 7
             headerSpacing = 5
-            cardSpacing = 6
+            cardSpacing = 4
             titleFontSize = 16
             subtitleFontSize = 10
             cardPadding = 7
             sectionSpacing = 3
             metricSpacing = 5
             cardCornerRadius = 14
+            cardHeight = 116
         }
     }
 }
 
 /// 面板统一配色。
-/// 配色目标不是“更炫”，而是提高信息对比度和层级辨识度。
+/// 这里统一使用动态颜色，保证浅色 / 暗色模式下都能保持足够的层级和可读性。
 private struct DashboardPalette {
-    let panelTop = Color(red: 0.96, green: 0.95, blue: 0.92)
-    let panelBottom = Color(red: 0.91, green: 0.90, blue: 0.87)
+    let panelBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.90, 0.89, 0.85),
+        dark: DashboardPalette.rgb(0.12, 0.12, 0.13)
+    )
 
-    let cardTop = Color.white.opacity(0.97)
-    let cardBottom = Color(red: 0.95, green: 0.94, blue: 0.92)
-    let metricCardBackground = Color.white.opacity(0.94)
-    let placeholderBackground = Color(red: 0.92, green: 0.92, blue: 0.90)
-    let mutedBackground = Color(red: 0.87, green: 0.88, blue: 0.85)
-    let cardBorder = Color.black.opacity(0.10)
+    let cardBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.965, 0.955, 0.935),
+        dark: DashboardPalette.rgb(0.17, 0.17, 0.18)
+    )
+    let cardHoverBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.985, 0.975, 0.945),
+        dark: DashboardPalette.rgb(0.22, 0.22, 0.24)
+    )
+    let metricCardBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.99, 0.99, 0.98),
+        dark: DashboardPalette.rgb(0.10, 0.11, 0.12)
+    )
+    let placeholderBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.92, 0.92, 0.90),
+        dark: DashboardPalette.rgb(0.19, 0.20, 0.21)
+    )
+    let mutedBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.87, 0.88, 0.85),
+        dark: DashboardPalette.rgb(0.23, 0.24, 0.25)
+    )
+    let cardBorder = DashboardPalette.dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.12),
+        dark: NSColor.white.withAlphaComponent(0.18)
+    )
+    let cardHoverBorder = DashboardPalette.dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.20),
+        dark: NSColor.white.withAlphaComponent(0.30)
+    )
 
-    let primaryText = Color(red: 0.14, green: 0.15, blue: 0.17)
-    let secondaryText = Color(red: 0.34, green: 0.36, blue: 0.39)
-    let actionText = Color(red: 0.21, green: 0.24, blue: 0.28)
+    let primaryText = Color.primary
+    let secondaryText = Color(nsColor: .secondaryLabelColor)
+    let actionText = Color(nsColor: .labelColor).opacity(0.88)
 
-    let accentText = Color(red: 0.05, green: 0.30, blue: 0.70)
-    let accentBackground = Color(red: 0.84, green: 0.90, blue: 0.98)
+    let accentText = Color(nsColor: .systemBlue)
+    let accentBackground = DashboardPalette.dynamicColor(
+        light: NSColor.systemBlue.withAlphaComponent(0.16),
+        dark: NSColor.systemBlue.withAlphaComponent(0.28)
+    )
 
-    let successText = Color(red: 0.08, green: 0.34, blue: 0.14)
-    let successBackground = Color(red: 0.84, green: 0.92, blue: 0.82)
+    let successText = Color(nsColor: .systemGreen)
+    let successBackground = DashboardPalette.dynamicColor(
+        light: NSColor.systemGreen.withAlphaComponent(0.18),
+        dark: NSColor.systemGreen.withAlphaComponent(0.28)
+    )
 
-    let warningText = Color(red: 0.57, green: 0.34, blue: 0.06)
-    let warningBackground = Color(red: 0.98, green: 0.91, blue: 0.78)
+    let warningText = Color(nsColor: .systemOrange)
+    let warningBackground = DashboardPalette.dynamicColor(
+        light: NSColor.systemOrange.withAlphaComponent(0.22),
+        dark: NSColor.systemOrange.withAlphaComponent(0.30)
+    )
 
-    let errorText = Color(red: 0.64, green: 0.17, blue: 0.17)
-    let errorBackground = Color(red: 0.98, green: 0.88, blue: 0.86)
+    let errorText = Color(nsColor: .systemRed)
+    let errorBackground = DashboardPalette.dynamicColor(
+        light: NSColor.systemRed.withAlphaComponent(0.16),
+        dark: NSColor.systemRed.withAlphaComponent(0.26)
+    )
 
-    let progressTrack = Color(red: 0.86, green: 0.87, blue: 0.88)
-    let progressGood = Color(red: 0.15, green: 0.64, blue: 0.22)
-    let progressWarn = Color(red: 0.90, green: 0.58, blue: 0.18)
+    let progressTrack = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.86, 0.87, 0.88),
+        dark: DashboardPalette.rgb(0.31, 0.32, 0.34)
+    )
+    let progressGood = Color(nsColor: .systemGreen)
+    let progressWarn = Color(nsColor: .systemOrange)
+
+    /// 生成固定 RGB 颜色。
+    private static func rgb(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> NSColor {
+        NSColor(calibratedRed: red, green: green, blue: blue, alpha: 1)
+    }
+
+    /// 生成随系统外观自动切换的动态颜色。
+    /// 使用 `NSColor` 的动态 provider，而不是在视图层手动判断外观，这样所有引用处都会自动跟随系统切换。
+    private static func dynamicColor(light: NSColor, dark: NSColor) -> Color {
+        Color(
+            nsColor: NSColor(name: nil) { appearance in
+                let bestMatch = appearance.bestMatch(from: [.darkAqua, .aqua])
+                return bestMatch == .darkAqua ? dark : light
+            }
+        )
+    }
 }

@@ -7,179 +7,284 @@
 
 import Foundation
 
-/// 非敏感账号资料。
-/// 这部分信息会写入 UserDefaults，便于应用启动后快速恢复账号列表和刷新策略。
-struct CodexAccountProfile: Identifiable, Codable, Equatable {
-    let id: UUID
-    var displayName: String
-    var note: String
-    var refreshIntervalSeconds: Int
-    var isEnabled: Bool
-    var createdAt: Date
-    var updatedAt: Date
+/// `codex-auth` 当前使用的 registry schema 版本。
+/// GUI 版会尽量只读写这一版字段，避免把参考工程的文件结构写乱。
+enum CodexRegistrySchema {
+    static let currentVersion = 3
+}
 
-    init(
-        id: UUID = UUID(),
-        displayName: String,
-        note: String = "",
-        refreshIntervalSeconds: Int = 60,
-        isEnabled: Bool = true,
-        createdAt: Date = Date(),
-        updatedAt: Date = Date()
-    ) {
-        self.id = id
-        self.displayName = displayName
-        self.note = note
-        self.refreshIntervalSeconds = refreshIntervalSeconds
-        self.isEnabled = isEnabled
-        self.createdAt = createdAt
-        self.updatedAt = updatedAt
+/// `registry.json` 里的套餐枚举。
+/// 这里直接对齐 `codex-auth` 的原始字符串，保证和现有磁盘数据完全兼容。
+enum CodexPlanType: String, Codable, Equatable {
+    case free
+    case plus
+    case prolite
+    case pro
+    case team
+    case business
+    case enterprise
+    case edu
+    case unknown
+
+    /// 统一输出给卡片徽标的短文案。
+    /// 菜单栏空间非常紧，这里尽量保持短、稳、可扫读。
+    var badgeTitle: String {
+        switch self {
+        case .free:
+            return "FREE"
+        case .plus:
+            return "PLUS"
+        case .prolite:
+            return "PRO LITE"
+        case .pro:
+            return "PRO"
+        case .team, .business:
+            return "BUSINESS"
+        case .enterprise:
+            return "ENTERPRISE"
+        case .edu:
+            return "EDU"
+        case .unknown:
+            return "UNKNOWN"
+        }
     }
 }
 
-/// 敏感请求配置。
-/// 包括 Bearer Token、Cookie 等认证信息，统一保存在系统钥匙串中，避免直接明文写入本地偏好。
-struct CodexAccountCredential: Codable, Equatable {
-    var bearerToken: String
-    var cookie: String
-    var clientVersion: String
-    var clientBuildNumber: String
-    var deviceID: String
-    var sessionID: String
-    var language: String
-    var userAgent: String
-    var additionalHeadersText: String
+/// `registry.json` 中记录的认证模式。
+enum CodexAuthMode: String, Codable, Equatable {
+    case chatgpt
+    case apikey
+}
 
-    static let empty = CodexAccountCredential(
-        bearerToken: "",
-        cookie: "",
-        clientVersion: "",
-        clientBuildNumber: "",
-        deviceID: "",
-        sessionID: "",
-        language: "zh-CN",
-        userAgent: CodexAccountCredential.defaultUserAgent,
-        additionalHeadersText: ""
+/// `registry.json.auto_switch` 配置块。
+/// GUI 当前不会直接编辑这部分，但读写时必须保留原值，避免把参考项目配置清空。
+struct CodexAutoSwitchConfig: Codable, Equatable {
+    var enabled: Bool = false
+    var threshold5hPercent: Int = 10
+    var thresholdWeeklyPercent: Int = 5
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case threshold5hPercent = "threshold_5h_percent"
+        case thresholdWeeklyPercent = "threshold_weekly_percent"
+    }
+}
+
+/// `registry.json.api` 配置块。
+/// 与参考实现保持同字段名，保证切换到 `codex-auth` CLI 时配置仍然一致。
+struct CodexAPIConfig: Codable, Equatable {
+    var usage: Bool = true
+    var account: Bool = true
+}
+
+/// 本地 rollout 去重签名。
+/// 当前 GUI 只做透传，不主动消费这个字段，但保存 registry 时必须保留。
+struct CodexRolloutSignature: Codable, Equatable {
+    var path: String
+    var eventTimestampMs: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case eventTimestampMs = "event_timestamp_ms"
+    }
+}
+
+/// 额度窗口快照。
+/// 结构对齐 `registry.last_usage.primary / secondary`。
+struct CodexStoredUsageWindow: Codable, Equatable {
+    var usedPercent: Double
+    var windowMinutes: Int?
+    var resetsAt: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case usedPercent = "used_percent"
+        case windowMinutes = "window_minutes"
+        case resetsAt = "resets_at"
+    }
+
+    /// 当前 UI 主要展示剩余百分比，因此这里统一提供派生值。
+    var remainingPercent: Int {
+        max(0, Int((100 - usedPercent).rounded()))
+    }
+
+    /// 统一把 Unix 秒时间戳转换成 `Date`，便于视图格式化。
+    var resetDate: Date? {
+        guard let resetsAt else {
+            return nil
+        }
+
+        return Date(timeIntervalSince1970: TimeInterval(resetsAt))
+    }
+}
+
+/// 额度余额快照。
+/// 目前只在解析 registry 时保留原值，不额外做展示逻辑。
+struct CodexStoredCreditsSnapshot: Codable, Equatable {
+    var hasCredits: Bool
+    var unlimited: Bool
+    var balance: String?
+
+    enum CodingKeys: String, CodingKey {
+        case hasCredits = "has_credits"
+        case unlimited
+        case balance
+    }
+}
+
+/// `registry.last_usage` 的完整结构。
+struct CodexStoredUsageSnapshot: Codable, Equatable {
+    var primary: CodexStoredUsageWindow?
+    var secondary: CodexStoredUsageWindow?
+    var credits: CodexStoredCreditsSnapshot?
+    var planType: CodexPlanType?
+
+    enum CodingKeys: String, CodingKey {
+        case primary
+        case secondary
+        case credits
+        case planType = "plan_type"
+    }
+}
+
+/// `registry.json.accounts[]` 的单条账号记录。
+/// `Identifiable` 直接使用 `account_key`，这样可以和 `codex-auth` 的记录主键完全一致。
+struct CodexRegistryAccount: Identifiable, Codable, Equatable {
+    var id: String { accountKey }
+
+    var accountKey: String
+    var chatgptAccountID: String
+    var chatgptUserID: String
+    var email: String
+    var alias: String
+    var accountName: String?
+    var plan: CodexPlanType?
+    var authMode: CodexAuthMode?
+    var createdAt: Int64
+    var lastUsedAt: Int64?
+    var lastUsage: CodexStoredUsageSnapshot?
+    var lastUsageAt: Int64?
+    var lastLocalRollout: CodexRolloutSignature?
+
+    enum CodingKeys: String, CodingKey {
+        case accountKey = "account_key"
+        case chatgptAccountID = "chatgpt_account_id"
+        case chatgptUserID = "chatgpt_user_id"
+        case email
+        case alias
+        case accountName = "account_name"
+        case plan
+        case authMode = "auth_mode"
+        case createdAt = "created_at"
+        case lastUsedAt = "last_used_at"
+        case lastUsage = "last_usage"
+        case lastUsageAt = "last_usage_at"
+        case lastLocalRollout = "last_local_rollout"
+    }
+
+    /// 卡片主标题的优先级完全参考 `codex-auth` 的人类识别习惯：
+    /// `alias > account_name > email`。
+    var displayName: String {
+        let trimmedAlias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedAlias.isEmpty == false {
+            return trimmedAlias
+        }
+
+        let trimmedAccountName = accountName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmedAccountName.isEmpty == false {
+            return trimmedAccountName
+        }
+
+        return email
+    }
+
+    /// 当标题不是邮箱时，再额外补一行邮箱，避免重复占空间。
+    var secondaryIdentityText: String? {
+        let normalizedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalizedDisplayName.isEmpty == false, normalizedDisplayName != normalizedEmail else {
+            return nil
+        }
+
+        return email
+    }
+
+    /// 套餐徽标优先使用最新用量快照里的 `plan_type`，其次才退回 registry 静态字段。
+    /// 这样可以尽量和实际接口返回保持一致。
+    var resolvedPlan: CodexPlanType? {
+        lastUsage?.planType ?? plan
+    }
+}
+
+/// 整个 `accounts/registry.json`。
+/// 保存时会固定写回 schema v3，避免和参考项目文件格式产生偏差。
+struct CodexRegistryDocument: Codable, Equatable {
+    var schemaVersion: Int
+    var activeAccountKey: String?
+    var activeAccountActivatedAtMs: Int64?
+    var autoSwitch: CodexAutoSwitchConfig
+    var api: CodexAPIConfig
+    var accounts: [CodexRegistryAccount]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case activeAccountKey = "active_account_key"
+        case activeAccountActivatedAtMs = "active_account_activated_at_ms"
+        case autoSwitch = "auto_switch"
+        case api
+        case accounts
+    }
+
+    static let empty = CodexRegistryDocument(
+        schemaVersion: CodexRegistrySchema.currentVersion,
+        activeAccountKey: nil,
+        activeAccountActivatedAtMs: nil,
+        autoSwitch: CodexAutoSwitchConfig(),
+        api: CodexAPIConfig(),
+        accounts: []
     )
+}
 
-    /// 使用一个较新的桌面浏览器 UA 作为默认值，减少服务端对缺失 UA 的拒绝概率。
-    static let defaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+/// `auth.json` / `*.auth.json` 的标准结构。
+/// 当前 GUI 只关心 ChatGPT Web 认证字段，因此按最小必要集合建模。
+struct CodexStoredAuthDocument: Codable, Equatable {
+    var authMode: String?
+    var openAIAPIKey: String?
+    var tokens: CodexStoredAuthTokens?
+    var lastRefresh: String?
 
-    /// 自动补齐 Bearer 前缀，兼容用户既可能粘贴纯 token，也可能直接粘贴完整 Authorization 值。
-    var normalizedAuthorizationHeader: String {
-        let trimmed = bearerToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.isEmpty == false else {
-            return ""
-        }
-
-        if trimmed.lowercased().hasPrefix("bearer ") {
-            return trimmed
-        }
-
-        return "Bearer \(trimmed)"
-    }
-
-    /// 将“每行一个 Header”的文本格式解析为字典，便于组装请求。
-    var parsedAdditionalHeaders: [String: String] {
-        additionalHeadersText
-            .split(whereSeparator: \.isNewline)
-            .reduce(into: [String: String]()) { partialResult, line in
-                let rawLine = String(line)
-                guard let separatorIndex = rawLine.firstIndex(of: ":") else {
-                    return
-                }
-
-                let key = rawLine[..<separatorIndex].trimmingCharacters(in: .whitespacesAndNewlines)
-                let value = rawLine[rawLine.index(after: separatorIndex)...].trimmingCharacters(in: .whitespacesAndNewlines)
-                guard key.isEmpty == false, value.isEmpty == false else {
-                    return
-                }
-
-                partialResult[key] = value
-            }
-    }
-
-    /// 从 Bearer Token 中推导当前 ChatGPT 账号 ID。
-    /// `subscriptions` 接口需要 `account_id` 查询参数，而用户导入 curl 时通常不会单独填写它。
-    /// 这里直接解析 JWT 的 payload，读取 `https://api.openai.com/auth.chatgpt_account_id` 对应字段，
-    /// 这样就能复用同一套认证信息去请求订阅数据。
-    var inferredAccountID: String? {
-        let authorization = normalizedAuthorizationHeader.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard authorization.isEmpty == false else {
-            return nil
-        }
-
-        let token: String
-        if authorization.lowercased().hasPrefix("bearer ") {
-            token = String(authorization.dropFirst("Bearer ".count))
-        } else {
-            token = authorization
-        }
-
-        let segments = token.split(separator: ".")
-        guard segments.count >= 2 else {
-            return nil
-        }
-
-        var base64 = String(segments[1])
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-
-        let remainder = base64.count % 4
-        if remainder > 0 {
-            base64 += String(repeating: "=", count: 4 - remainder)
-        }
-
-        guard
-            let data = Data(base64Encoded: base64),
-            let jsonObject = try? JSONSerialization.jsonObject(with: data),
-            let payload = jsonObject as? [String: Any]
-        else {
-            return nil
-        }
-
-        if let authInfo = payload["https://api.openai.com/auth"] as? [String: Any],
-           let accountID = authInfo["chatgpt_account_id"] as? String,
-           accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            return accountID
-        }
-
-        return nil
+    enum CodingKeys: String, CodingKey {
+        case authMode = "auth_mode"
+        case openAIAPIKey = "OPENAI_API_KEY"
+        case tokens
+        case lastRefresh = "last_refresh"
     }
 }
 
-/// 编辑器使用的草稿模型。
-/// 把资料与敏感配置聚合到一起，便于表单一次性提交。
-struct CodexAccountDraft: Equatable {
-    var id: UUID?
-    var displayName: String
-    var note: String
-    var refreshIntervalSeconds: Int
-    var isEnabled: Bool
-    var credential: CodexAccountCredential
+/// `auth.json.tokens` 字段。
+struct CodexStoredAuthTokens: Codable, Equatable {
+    var idToken: String?
+    var accessToken: String?
+    var refreshToken: String?
+    var accountID: String?
 
-    init(
-        id: UUID? = nil,
-        displayName: String = "",
-        note: String = "",
-        refreshIntervalSeconds: Int = 60,
-        isEnabled: Bool = true,
-        credential: CodexAccountCredential = .empty
-    ) {
-        self.id = id
-        self.displayName = displayName
-        self.note = note
-        self.refreshIntervalSeconds = refreshIntervalSeconds
-        self.isEnabled = isEnabled
-        self.credential = credential
+    enum CodingKeys: String, CodingKey {
+        case idToken = "id_token"
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case accountID = "account_id"
     }
+}
 
-    init(profile: CodexAccountProfile, credential: CodexAccountCredential) {
-        self.id = profile.id
-        self.displayName = profile.displayName
-        self.note = profile.note
-        self.refreshIntervalSeconds = profile.refreshIntervalSeconds
-        self.isEnabled = profile.isEnabled
-        self.credential = credential
-    }
+/// 从 `auth.json` 解析出的运行态认证上下文。
+/// 这个类型不直接落盘，只用于登录导入、切换和 API 请求。
+struct CodexAuthContext: Equatable {
+    var email: String
+    var chatgptAccountID: String
+    var chatgptUserID: String
+    var recordKey: String
+    var accessToken: String
+    var refreshToken: String?
+    var lastRefresh: String?
+    var plan: CodexPlanType?
+    var authMode: CodexAuthMode
 }

@@ -5,3 +5,6 @@ DerivedData/
 # Xcode 用户级配置
 *.xcuserstate
 xcuserdata/
+
+# 本地参考工程与资料目录，仅用于对照实现，不参与当前项目版本控制
+.references/
