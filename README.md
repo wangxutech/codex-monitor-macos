@@ -14,6 +14,12 @@ CodexMonitor 是一个原生 macOS 菜单栏应用，用来集中查看多个 Co
 - 订阅信息会缓存到 `~/.codex/accounts/subscriptions.json`，保证应用重启后也能立即显示
 - 支持亮色 / 暗色模式
 
+## 界面预览
+
+| 亮色主题 | 暗色主题 |
+| --- | --- |
+| <img src="docs/images/codex-monitor-light-theme.jpg" alt="CodexMonitor 亮色主题界面" width="360"> | <img src="docs/images/codex-monitor-dark-theme.jpg" alt="CodexMonitor 暗色主题界面" width="360"> |
+
 ## 当前实现说明
 
 当前程序直接依赖官方 `codex` 命令与 `~/.codex` 目录，账号数据不会再额外维护一套独立数据库。
@@ -135,6 +141,8 @@ CodexMonitor/
 │   └── CodexMonitorApp.swift
 ├── CodexMonitor.xcodeproj/
 ├── Build/
+├── docs/
+│   └── images/       # README 使用的界面截图
 └── README.md
 ```
 
