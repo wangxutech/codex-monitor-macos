@@ -21,16 +21,22 @@ struct UsageDashboardView: View {
     @ObservedObject var store: AppState
     let displayMode: UsageDashboardDisplayMode
 
+    /// 当前筛选条件下真正需要渲染的账号列表。
+    /// 视图层统一使用这个集合，避免“列表已经过滤了，但空状态和摘要还是原始数据”的割裂体验。
+    private var displayedAccounts: [CodexRegistryAccount] {
+        store.filteredAccounts
+    }
+
     var body: some View {
         VStack(spacing: layout.outerSpacing) {
             headerSection
 
-            if store.accounts.isEmpty {
+            if shouldShowEmptyState {
                 emptyState
             } else {
                 ScrollView {
                     LazyVStack(spacing: layout.cardSpacing) {
-                        ForEach(store.accounts) { account in
+                        ForEach(displayedAccounts) { account in
                             AccountCardView(
                                 profile: account,
                                 runtimeState: store.runtimeState(for: account.accountKey),
@@ -148,25 +154,23 @@ struct UsageDashboardView: View {
     /// 空状态面板。
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(store.isLaunchingLogin ? "正在等待登录完成" : "未发现账号")
+            Text(emptyStateTitle)
                 .font(.system(size: displayMode == .menuBar ? 16 : 18, weight: .bold))
                 .foregroundStyle(palette.primaryText)
 
-            Text(
-                store.isLaunchingLogin
-                ? "浏览器登录完成后账号会自动出现；如果暂时不登录，可以点击下方按钮取消。"
-                : "会自动读取 `~/.codex` 里的已有账号。点击右上角“添加账号”即可直接走官方登录。"
-            )
+            Text(emptyStateDescription)
                 .font(.system(size: displayMode == .menuBar ? 12 : 13))
                 .foregroundStyle(palette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Button {
-                toggleLoginFlow()
-            } label: {
-                Label(store.isLaunchingLogin ? "取消登录" : "立即添加第一个账号", systemImage: store.isLaunchingLogin ? "xmark.circle" : "person.crop.circle.badge.plus")
+            if shouldShowEmptyStateAction {
+                Button {
+                    toggleLoginFlow()
+                } label: {
+                    Label(store.isLaunchingLogin ? "取消登录" : "立即添加第一个账号", systemImage: store.isLaunchingLogin ? "xmark.circle" : "person.crop.circle.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.borderedProminent)
         }
         .padding(displayMode == .menuBar ? 16 : 20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -181,10 +185,29 @@ struct UsageDashboardView: View {
 
     /// 底部辅助信息。
     private var footerSection: some View {
-        HStack {
-            Text("已连接 \(compactCodexHomePath)")
-                .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .medium))
-                .foregroundStyle(palette.secondaryText)
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Text("显示")
+                    .font(.system(size: displayMode == .menuBar ? 10 : 12, weight: .semibold))
+                    .foregroundStyle(palette.secondaryText)
+
+                Picker(
+                    "显示账号范围",
+                    selection: Binding(
+                        get: { store.accountVisibilityFilter },
+                        set: { newValue in
+                            store.updateAccountVisibilityFilter(newValue)
+                        }
+                    )
+                ) {
+                    ForEach(AccountVisibilityFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: displayMode == .menuBar ? 108 : 120)
+            }
 
             Spacer()
 
@@ -200,8 +223,19 @@ struct UsageDashboardView: View {
     /// 菜单栏标题摘要。
     private var summaryText: String {
         if let activeAccount = store.accounts.first(where: { $0.accountKey == store.activeAccountKey }) {
+            if store.accountVisibilityFilter == .availableAccounts {
+                return "显示 \(displayedAccounts.count)/\(store.accounts.count) 个可用账号，当前使用 \(activeAccount.displayName)"
+            }
+
             return "\(store.accounts.count) 个账号，当前使用 \(activeAccount.displayName)"
         }
+
+        if store.accountVisibilityFilter == .availableAccounts {
+            return store.isLaunchingLogin
+                ? "浏览器登录进行中"
+                : "显示 \(displayedAccounts.count)/\(store.accounts.count) 个可用账号"
+        }
+
         return store.isLaunchingLogin ? "浏览器登录进行中" : "\(store.accounts.count) 个账号"
     }
 
@@ -236,16 +270,6 @@ struct UsageDashboardView: View {
         }
     }
 
-    /// 底部路径统一压缩成更短的 `~/.codex` 风格。
-    /// 用户只需要知道当前是否已经指向正确目录，不需要看一整串绝对路径。
-    private var compactCodexHomePath: String {
-        let actualHomePath = NSHomeDirectoryForUser(NSUserName()) ?? FileManager.default.homeDirectoryForCurrentUser.path
-        if store.codexHomePath.hasPrefix(actualHomePath) {
-            return "~" + store.codexHomePath.dropFirst(actualHomePath.count)
-        }
-        return store.codexHomePath
-    }
-
     /// 菜单栏宿主下不适合挂 SwiftUI 的复杂对话框。
     /// 简单错误直接走 `NSAlert`，可以确保一定弹得出来、也一定能点击。
     private func showOperationErrorAlert(message: String) {
@@ -266,6 +290,38 @@ struct UsageDashboardView: View {
     /// 统一的高对比配色。
     private var palette: DashboardPalette {
         DashboardPalette()
+    }
+
+    /// 是否应该显示空状态。
+    /// 除了“根本没有账号”之外，当用户切到“可用账号”且当前没有任何可用账号时，也需要给出明确反馈。
+    private var shouldShowEmptyState: Bool {
+        store.accounts.isEmpty || displayedAccounts.isEmpty
+    }
+
+    /// 空状态标题根据当前场景动态切换。
+    private var emptyStateTitle: String {
+        if store.accounts.isEmpty {
+            return store.isLaunchingLogin ? "正在等待登录完成" : "未发现账号"
+        }
+
+        return "当前没有可用账号"
+    }
+
+    /// 空状态说明文案。
+    /// 有账号但都不可用时，重点提示用户可以切回“所有账号”继续查看详细额度。
+    private var emptyStateDescription: String {
+        if store.accounts.isEmpty {
+            return store.isLaunchingLogin
+                ? "浏览器登录完成后账号会自动出现；如果暂时不登录，可以点击下方按钮取消。"
+                : "会自动读取 `~/.codex` 里的已有账号。点击右上角“添加账号”即可直接走官方登录。"
+        }
+
+        return "当前筛选为“可用账号”，但所有账号至少有一个额度窗口已经归零。你可以在底部切回“所有账号”查看完整信息。"
+    }
+
+    /// 只有在“尚未添加任何账号”这类空状态下，才需要继续显示登录入口。
+    private var shouldShowEmptyStateAction: Bool {
+        store.accounts.isEmpty
     }
 }
 

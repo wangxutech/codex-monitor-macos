@@ -161,6 +161,21 @@ struct AccountRuntimeState: Equatable {
 }
 
 extension AccountUsageSnapshot {
+    /// 判断当前账号是否仍然可用于继续消费额度。
+    /// 规则遵循产品定义：
+    /// 1. 只要任意一个已知窗口剩余额度为 0，就视为不可用
+    /// 2. 如果接口没有返回窗口，但顶层标记已经明确不允许继续使用，也视为不可用
+    /// 3. 只有在所有已知窗口都大于 0，或者接口没有窗口且仍然允许使用时，才视为可用
+    var isAvailableForDisplay: Bool {
+        if windows.isEmpty {
+            return allowed && limitReached == false
+        }
+
+        return windows.allSatisfy { window in
+            window.remainingPercent > 0
+        }
+    }
+
     /// 从原始响应构建展示快照，统一处理计划名称和双窗口数据。
     init(response: CodexUsageResponse, fetchedAt: Date = Date()) {
         let primaryWindow = response.rateLimit?.primaryWindow.map {

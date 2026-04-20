@@ -34,13 +34,16 @@ struct CodexMonitorApp: App {
     }
 
     /// 菜单栏弹窗高度会随着账号数量自动伸缩。
+    /// 高度计算基于当前筛选后的可见账号数量，而不是原始账号总数。
+    /// 这样当用户切换到底部的“可用账号”时，面板不会因为隐藏掉的账号而保留无意义的空白高度。
+    ///
     /// 账号列表最多按 7 张卡片计算，再多账号时交给内部滚动区域处理。
     private var menuBarPanelHeight: CGFloat {
         if appState.accounts.isEmpty {
             return 260
         }
 
-        let visibleAccountCount = min(max(appState.accounts.count, 1), 7)
+        let visibleAccountCount = min(max(appState.filteredAccountCount, 1), 7)
 
         // 这里的基础高度只包含标题栏、摘要、顶部/底部边距和底部退出区域。
         // 账号卡片区域单独按 120 高度计算，避免只有 1 个账号时仍显示大面积空白面板。

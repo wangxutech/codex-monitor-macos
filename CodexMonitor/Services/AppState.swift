@@ -7,6 +7,33 @@
 
 import Foundation
 
+/// 账号列表的显示范围筛选。
+/// 当前只有两种模式：
+/// 1. 显示所有账号
+/// 2. 只显示当前仍然“可用”的账号
+///
+/// 这里把筛选条件放到全局状态层，而不是只放在视图层，原因有两个：
+/// 1. 菜单栏面板高度也要跟随筛选结果变化，不能只影响列表本身
+/// 2. 顶部摘要、空状态、底部设置都需要共享同一份筛选值
+enum AccountVisibilityFilter: String, CaseIterable, Identifiable {
+    case allAccounts
+    case availableAccounts
+
+    var id: String {
+        rawValue
+    }
+
+    /// 提供给下拉框直接展示的人类可读文案。
+    var title: String {
+        switch self {
+        case .allAccounts:
+            return "所有账号"
+        case .availableAccounts:
+            return "可用账号"
+        }
+    }
+}
+
 /// 应用全局状态中心。
 /// 这次重构后，GUI 不再维护自己的账号数据库，而是直接把 `~/.codex/accounts/registry.json`
 /// 当作唯一事实来源。这样可以和 `codex-auth`、Codex CLI、Codex App 共用同一套账号状态。
@@ -18,6 +45,7 @@ final class AppState: ObservableObject {
     @Published private(set) var menuBarTitle = "Codex"
     @Published private(set) var codexHomePath = "~/.codex"
     @Published private(set) var isLaunchingLogin = false
+    @Published private(set) var accountVisibilityFilter: AccountVisibilityFilter = .allAccounts
 
     private let authStore: CodexAuthStore
     private let api: CodexUsageAPI
@@ -76,6 +104,40 @@ final class AppState: ObservableObject {
     /// 供卡片判断当前账号是否为活动账号。
     func isActiveAccount(_ accountKey: String) -> Bool {
         activeAccountKey == accountKey
+    }
+
+    /// 当前筛选条件下实际需要展示的账号列表。
+    /// 视图层、摘要文案和菜单栏高度都统一走这里，避免同一条件被复制三份后逐渐跑偏。
+    var filteredAccounts: [CodexRegistryAccount] {
+        accounts.filter { account in
+            shouldDisplayAccount(account.accountKey)
+        }
+    }
+
+    /// 当前筛选后可见账号数量。
+    /// 单独抽出来是为了让菜单栏高度计算更直接，不需要每次重新遍历一遍数组。
+    var filteredAccountCount: Int {
+        filteredAccounts.count
+    }
+
+    /// 更新账号显示范围。
+    /// 这里单独提供方法而不是暴露可写 `@Published`，这样后续如果要把筛选值持久化到本地，
+    /// 只需要在这个入口里补逻辑即可，不会影响视图层调用。
+    func updateAccountVisibilityFilter(_ filter: AccountVisibilityFilter) {
+        accountVisibilityFilter = filter
+    }
+
+    /// 判断某个账号当前是否仍然可用。
+    /// 业务规则按产品要求处理：
+    /// 1. 只要 5 小时限额剩余为 0，则不可用
+    /// 2. 只要每周限额剩余为 0，则不可用
+    /// 3. 如果某个账号当前还没有拿到任何额度快照，则暂时视为可用，避免刚启动时被错误隐藏
+    func isAccountAvailable(_ accountKey: String) -> Bool {
+        guard let snapshot = runtimeState(for: accountKey).snapshot else {
+            return true
+        }
+
+        return snapshot.isAvailableForDisplay
     }
 
     /// 打开官方登录流程。
@@ -352,6 +414,17 @@ final class AppState: ObservableObject {
     /// 当前菜单栏标题先保持简洁稳定，避免账号数较多时标题频繁抖动。
     private func rebuildMenuBarTitle() {
         menuBarTitle = "Codex"
+    }
+
+    /// 按当前筛选条件判断账号是否应当出现在列表中。
+    /// 这样筛选逻辑可以稳定复用在列表、面板高度和空状态中。
+    private func shouldDisplayAccount(_ accountKey: String) -> Bool {
+        switch accountVisibilityFilter {
+        case .allAccounts:
+            return true
+        case .availableAccounts:
+            return isAccountAvailable(accountKey)
+        }
     }
 
     /// 后台观察 `auth.json` 是否变化。
