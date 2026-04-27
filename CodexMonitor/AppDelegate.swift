@@ -45,13 +45,13 @@ struct CodexMonitorApp: App {
 
         let visibleAccountCount = min(max(appState.filteredAccountCount, 1), 7)
 
-        // 这里的基础高度只包含标题栏、摘要、顶部/底部边距和底部退出区域。
-        // 账号卡片区域单独按 120 高度计算，避免只有 1 个账号时仍显示大面积空白面板。
-        let chromeHeight: CGFloat = 86
+        // 这里的基础高度需要覆盖标题区、摘要、footer、根 VStack 间距以及上下内边距。
+        // 之前只预留了较理想化的 86pt，少量账号时实际内容会略高于面板，系统就会错误显示滚动条。
+        let chromeHeight: CGFloat = 112
 
-        // 菜单栏卡片在 `UsageDashboardView` 中固定为 120 高度。
-        // 7 个账号的卡片主体高度为 840；卡片之间保留 4pt 间距，确保视觉分隔但不显著增加面板体积。
-        let accountCardHeight: CGFloat = 118
+        // 菜单栏卡片在 `UsageDashboardView` 中固定为 116 高度。
+        // 这里和视图层保持一致，避免高度计算和真实布局长期漂移。
+        let accountCardHeight: CGFloat = 116
         let cardSpacing: CGFloat = 4
         let accountPanelHeight = CGFloat(visibleAccountCount) * accountCardHeight +
             CGFloat(max(visibleAccountCount - 1, 0)) * cardSpacing

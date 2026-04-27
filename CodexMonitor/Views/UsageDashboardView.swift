@@ -384,7 +384,7 @@ private struct AccountCardView: View {
                 HStack(alignment: .center, spacing: 8) {
                     Text(profile.displayName)
                         .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(palette.primaryText)
+                        .foregroundStyle(accountTitleColor)
                         .lineLimit(1)
 
                     if let snapshot = runtimeState.snapshot {
@@ -399,6 +399,10 @@ private struct AccountCardView: View {
                         activeStateChip
                     }
 
+                    if isUnavailable {
+                        unavailableStateChip
+                    }
+
                     Spacer(minLength: 4)
 
                     compactActionControls
@@ -411,11 +415,15 @@ private struct AccountCardView: View {
                         HStack(spacing: 8) {
                             Text(profile.displayName)
                                 .font(.system(size: 18, weight: .bold))
-                                .foregroundStyle(palette.primaryText)
+                                .foregroundStyle(accountTitleColor)
                                 .lineLimit(1)
 
                             if isActive {
                                 activeStateChip
+                            }
+
+                            if isUnavailable {
+                                unavailableStateChip
                             }
                         }
 
@@ -634,21 +642,83 @@ private struct AccountCardView: View {
     private var activeStateChip: some View {
         Text("当前使用")
             .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .bold))
-            .foregroundStyle(palette.successText)
+            .foregroundStyle(palette.activeBadgeText)
             .padding(.horizontal, displayMode == .menuBar ? 6 : 8)
             .padding(.vertical, displayMode == .menuBar ? 2 : 4)
-            .background(palette.successBackground)
+            .background(palette.activeBadgeBackground)
+            .overlay(
+                Capsule()
+                    .stroke(palette.activeBadgeBorder, lineWidth: 0.8)
+            )
+            .clipShape(Capsule())
+    }
+
+    /// 不可用状态标签。
+    /// 当任意额度窗口已经归零时，卡片本身会弱化，这个标签负责给用户一个明确的文字锚点。
+    private var unavailableStateChip: some View {
+        Text("不可用")
+            .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .bold))
+            .foregroundStyle(palette.unavailableBadgeText)
+            .padding(.horizontal, displayMode == .menuBar ? 6 : 8)
+            .padding(.vertical, displayMode == .menuBar ? 2 : 4)
+            .background(palette.unavailableBadgeBackground)
+            .overlay(
+                Capsule()
+                    .stroke(palette.unavailableBadgeBorder, lineWidth: 0.8)
+            )
             .clipShape(Capsule())
     }
 
     private func planChip(text: String) -> some View {
-        Text(compactPlanText(text))
+        let style = planChipStyle(for: text)
+
+        return Text(compactPlanText(text))
             .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .bold))
-            .foregroundStyle(palette.accentText)
+            .foregroundStyle(style.textColor)
             .padding(.horizontal, displayMode == .menuBar ? 6 : 8)
             .padding(.vertical, displayMode == .menuBar ? 2 : 4)
-            .background(palette.accentBackground)
+            .background(style.backgroundColor)
+            .overlay(
+                Capsule()
+                    .stroke(style.borderColor, lineWidth: 0.8)
+            )
             .clipShape(Capsule())
+    }
+
+    /// 套餐 badge 使用独立色系，避免 PRO / PLUS / FREE 在快速扫视时都像同一个蓝色状态。
+    /// 这里只按展示文案归类，兼容接口可能返回的大小写或 `PRO LITE` 这类扩展套餐。
+    private func planChipStyle(for text: String) -> ChipStyle {
+        let normalized = compactPlanText(text).uppercased()
+
+        if normalized.contains("PRO") {
+            return ChipStyle(
+                textColor: palette.proPlanText,
+                backgroundColor: palette.proPlanBackground,
+                borderColor: palette.proPlanBorder
+            )
+        }
+
+        if normalized == "PLUS" {
+            return ChipStyle(
+                textColor: palette.plusPlanText,
+                backgroundColor: palette.plusPlanBackground,
+                borderColor: palette.plusPlanBorder
+            )
+        }
+
+        if normalized == "FREE" {
+            return ChipStyle(
+                textColor: palette.freePlanText,
+                backgroundColor: palette.freePlanBackground,
+                borderColor: palette.freePlanBorder
+            )
+        }
+
+        return ChipStyle(
+            textColor: palette.accentText,
+            backgroundColor: palette.accentBackground,
+            borderColor: palette.accentText.opacity(0.20)
+        )
     }
 
     /// 年度会员标签。
@@ -656,10 +726,14 @@ private struct AccountCardView: View {
     private var annualChip: some View {
         Text("年度")
             .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .bold))
-            .foregroundStyle(palette.warningText)
+            .foregroundStyle(palette.annualBadgeText)
             .padding(.horizontal, displayMode == .menuBar ? 6 : 8)
             .padding(.vertical, displayMode == .menuBar ? 2 : 4)
-            .background(palette.warningBackground)
+            .background(palette.annualBadgeBackground)
+            .overlay(
+                Capsule()
+                    .stroke(palette.annualBadgeBorder, lineWidth: 0.8)
+            )
             .clipShape(Capsule())
     }
 
@@ -794,16 +868,24 @@ private struct AccountCardView: View {
     }
 
     /// 账号卡片背景。
-    /// hover 时使用更亮、更冷一点的底色，让用户能明显感知当前鼠标所在卡片。
+    /// hover 时使用更亮、更冷一点的底色；不可用账号使用更冷的灰底，让它和仍可继续使用的账号拉开层级。
     private var accountCardBackground: Color {
-        isHoveringCard ? palette.cardHoverBackground : palette.cardBackground
+        if isUnavailable {
+            return isHoveringCard ? palette.unavailableCardHoverBackground : palette.unavailableCardBackground
+        }
+
+        return isHoveringCard ? palette.cardHoverBackground : palette.cardBackground
     }
 
     /// 账号卡片描边颜色。
-    /// 活动账号仍保留蓝色强调；普通账号 hover 时提高描边对比度。
+    /// 活动账号保留蓝色强调；不可用账号使用偏橙灰描边，让用户不用读数值也能先感知状态。
     private var accountCardBorderColor: Color {
         if isActive {
             return palette.accentText.opacity(isHoveringCard ? 0.65 : 0.45)
+        }
+
+        if isUnavailable {
+            return palette.unavailableCardBorder.opacity(isHoveringCard ? 0.80 : 0.58)
         }
 
         return isHoveringCard ? palette.cardHoverBorder : palette.cardBorder
@@ -826,6 +908,17 @@ private struct AccountCardView: View {
         }
 
         return displayMode == .menuBar ? (isHoveringCard ? 9 : 6) : (isHoveringCard ? 14 : 12)
+    }
+
+    /// 当前卡片是否不可用。
+    /// 只要任意已知额度窗口为 0，`AccountUsageSnapshot` 就会把它判定为不可用。
+    private var isUnavailable: Bool {
+        runtimeState.snapshot?.isAvailableForDisplay == false
+    }
+
+    /// 不可用账号的标题稍微降权，但仍保持可读，不把用户需要识别的邮箱压得过淡。
+    private var accountTitleColor: Color {
+        isUnavailable ? palette.primaryText.opacity(0.74) : palette.primaryText
     }
 
     /// 刷新图标与转圈态使用固定尺寸容器，避免切换状态时撑高卡片、造成面板抖动。
@@ -948,6 +1041,14 @@ private struct SubscriptionExpiryDescriptor {
     let text: String
     let textColor: Color
     let backgroundColor: Color
+}
+
+/// 通用胶囊 badge 样式。
+/// 套餐、当前账号、不可用状态都使用同一组字段，这样高度、描边和背景层级可以保持一致。
+private struct ChipStyle {
+    let textColor: Color
+    let backgroundColor: Color
+    let borderColor: Color
 }
 
 /// 菜单栏模式使用的紧凑指标卡。
@@ -1090,6 +1191,14 @@ private struct DashboardPalette {
         light: DashboardPalette.rgb(0.985, 0.975, 0.945),
         dark: DashboardPalette.rgb(0.22, 0.22, 0.24)
     )
+    let unavailableCardBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.925, 0.920, 0.900),
+        dark: DashboardPalette.rgb(0.145, 0.145, 0.150)
+    )
+    let unavailableCardHoverBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.945, 0.935, 0.905),
+        dark: DashboardPalette.rgb(0.185, 0.180, 0.170)
+    )
     let metricCardBackground = DashboardPalette.dynamicColor(
         light: DashboardPalette.rgb(0.99, 0.99, 0.98),
         dark: DashboardPalette.rgb(0.10, 0.11, 0.12)
@@ -1110,6 +1219,10 @@ private struct DashboardPalette {
         light: NSColor.black.withAlphaComponent(0.20),
         dark: NSColor.white.withAlphaComponent(0.30)
     )
+    let unavailableCardBorder = DashboardPalette.dynamicColor(
+        light: NSColor.systemOrange.withAlphaComponent(0.46),
+        dark: NSColor.systemOrange.withAlphaComponent(0.62)
+    )
 
     let primaryText = Color.primary
     let secondaryText = Color(nsColor: .secondaryLabelColor)
@@ -1125,6 +1238,15 @@ private struct DashboardPalette {
     let successBackground = DashboardPalette.dynamicColor(
         light: NSColor.systemGreen.withAlphaComponent(0.18),
         dark: NSColor.systemGreen.withAlphaComponent(0.28)
+    )
+    let activeBadgeText = Color.white
+    let activeBadgeBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.05, 0.55, 0.22),
+        dark: DashboardPalette.rgb(0.12, 0.66, 0.30)
+    )
+    let activeBadgeBorder = DashboardPalette.dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.10),
+        dark: NSColor.white.withAlphaComponent(0.18)
     )
 
     let warningText = Color(nsColor: .systemOrange)
@@ -1145,6 +1267,68 @@ private struct DashboardPalette {
     )
     let progressGood = Color(nsColor: .systemGreen)
     let progressWarn = Color(nsColor: .systemOrange)
+
+    let proPlanText = Color.white
+    let proPlanBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.11, 0.45, 0.96),
+        dark: DashboardPalette.rgb(0.18, 0.52, 1.00)
+    )
+    let proPlanBorder = DashboardPalette.dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.12),
+        dark: NSColor.white.withAlphaComponent(0.18)
+    )
+
+    let plusPlanText = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.72, 0.31, 0.00),
+        dark: DashboardPalette.rgb(1.00, 0.72, 0.30)
+    )
+    let plusPlanBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(1.00, 0.86, 0.58),
+        dark: NSColor.systemOrange.withAlphaComponent(0.22)
+    )
+    let plusPlanBorder = DashboardPalette.dynamicColor(
+        light: NSColor.systemOrange.withAlphaComponent(0.36),
+        dark: NSColor.systemOrange.withAlphaComponent(0.45)
+    )
+
+    let freePlanText = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.26, 0.33, 0.40),
+        dark: DashboardPalette.rgb(0.82, 0.86, 0.90)
+    )
+    let freePlanBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.84, 0.88, 0.92),
+        dark: DashboardPalette.rgb(0.24, 0.27, 0.30)
+    )
+    let freePlanBorder = DashboardPalette.dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.14),
+        dark: NSColor.white.withAlphaComponent(0.18)
+    )
+
+    let unavailableBadgeText = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.70, 0.24, 0.05),
+        dark: DashboardPalette.rgb(1.00, 0.63, 0.42)
+    )
+    let unavailableBadgeBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(1.00, 0.86, 0.78),
+        dark: NSColor.systemRed.withAlphaComponent(0.20)
+    )
+    let unavailableBadgeBorder = DashboardPalette.dynamicColor(
+        light: NSColor.systemRed.withAlphaComponent(0.28),
+        dark: NSColor.systemRed.withAlphaComponent(0.42)
+    )
+
+    let annualBadgeText = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(0.58, 0.25, 0.00),
+        dark: DashboardPalette.rgb(1.00, 0.78, 0.38)
+    )
+    let annualBadgeBackground = DashboardPalette.dynamicColor(
+        light: DashboardPalette.rgb(1.00, 0.79, 0.42),
+        dark: NSColor.systemYellow.withAlphaComponent(0.24)
+    )
+    let annualBadgeBorder = DashboardPalette.dynamicColor(
+        light: NSColor.systemOrange.withAlphaComponent(0.42),
+        dark: NSColor.systemYellow.withAlphaComponent(0.50)
+    )
 
     /// 生成固定 RGB 颜色。
     private static func rgb(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> NSColor {
