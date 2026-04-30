@@ -34,6 +34,31 @@ enum AccountVisibilityFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// 账号套餐类型筛选。
+/// 当前菜单栏只暴露用户最常见、最容易理解的三类：Pro、Plus、Free。
+/// 如果后续接口返回 Team / Business / Enterprise 等扩展类型，在三项全选时仍然显示，避免默认状态误隐藏账号。
+enum AccountPlanFilter: String, CaseIterable, Identifiable, Hashable {
+    case pro
+    case plus
+    case free
+
+    var id: String {
+        rawValue
+    }
+
+    /// 底部 checkbox 展示文案。
+    var title: String {
+        switch self {
+        case .pro:
+            return "Pro"
+        case .plus:
+            return "Plus"
+        case .free:
+            return "Free"
+        }
+    }
+}
+
 /// 应用全局状态中心。
 /// 这次重构后，GUI 不再维护自己的账号数据库，而是直接把 `~/.codex/accounts/registry.json`
 /// 当作唯一事实来源。这样可以和 `codex-auth`、Codex CLI、Codex App 共用同一套账号状态。
@@ -46,6 +71,7 @@ final class AppState: ObservableObject {
     @Published private(set) var codexHomePath = "~/.codex"
     @Published private(set) var isLaunchingLogin = false
     @Published private(set) var accountVisibilityFilter: AccountVisibilityFilter = .allAccounts
+    @Published private(set) var enabledPlanFilters = Set(AccountPlanFilter.allCases)
 
     private let authStore: CodexAuthStore
     private let api: CodexUsageAPI
@@ -125,6 +151,21 @@ final class AppState: ObservableObject {
     /// 只需要在这个入口里补逻辑即可，不会影响视图层调用。
     func updateAccountVisibilityFilter(_ filter: AccountVisibilityFilter) {
         accountVisibilityFilter = filter
+    }
+
+    /// 切换某个套餐类型是否展示。
+    /// 保持入口集中在状态层，后续如果要把筛选值持久化到用户偏好，这里就是唯一改动点。
+    func updatePlanFilter(_ filter: AccountPlanFilter, isEnabled: Bool) {
+        if isEnabled {
+            enabledPlanFilters.insert(filter)
+        } else {
+            enabledPlanFilters.remove(filter)
+        }
+    }
+
+    /// 视图层通过这个方法生成 checkbox 绑定，避免直接暴露可写集合。
+    func isPlanFilterEnabled(_ filter: AccountPlanFilter) -> Bool {
+        enabledPlanFilters.contains(filter)
     }
 
     /// 判断某个账号当前是否仍然可用。
@@ -419,12 +460,54 @@ final class AppState: ObservableObject {
     /// 按当前筛选条件判断账号是否应当出现在列表中。
     /// 这样筛选逻辑可以稳定复用在列表、面板高度和空状态中。
     private func shouldDisplayAccount(_ accountKey: String) -> Bool {
+        guard let account = accounts.first(where: { $0.accountKey == accountKey }),
+              shouldDisplayPlan(for: account) else {
+            return false
+        }
+
         switch accountVisibilityFilter {
         case .allAccounts:
             return true
         case .availableAccounts:
             return isAccountAvailable(accountKey)
         }
+    }
+
+    /// 判断账号套餐类型是否满足底部 checkbox 筛选。
+    /// 三项全选代表“不过滤套餐类型”，此时未知或未来新增套餐也会继续显示。
+    private func shouldDisplayPlan(for account: CodexRegistryAccount) -> Bool {
+        let allPlanFilters = Set(AccountPlanFilter.allCases)
+        if enabledPlanFilters == allPlanFilters {
+            return true
+        }
+
+        guard let planFilter = planFilter(for: account) else {
+            return false
+        }
+
+        return enabledPlanFilters.contains(planFilter)
+    }
+
+    /// 从运行时快照优先解析套餐；没有快照时退回 registry 中已有的静态套餐。
+    /// 这样用户刚刷新出最新套餐后，筛选能立即跟随接口结果，而不是等下一次写盘。
+    private func planFilter(for account: CodexRegistryAccount) -> AccountPlanFilter? {
+        let snapshotPlan = runtimeStates[account.accountKey]?.snapshot?.planType
+        let rawPlan = snapshotPlan ?? account.resolvedPlan?.badgeTitle
+        let normalizedPlan = rawPlan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+
+        if normalizedPlan.contains("pro") {
+            return .pro
+        }
+
+        if normalizedPlan == "plus" {
+            return .plus
+        }
+
+        if normalizedPlan == "free" {
+            return .free
+        }
+
+        return nil
     }
 
     /// 后台观察 `auth.json` 是否变化。

@@ -186,7 +186,7 @@ struct UsageDashboardView: View {
     /// 底部辅助信息。
     private var footerSection: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text("显示")
                     .font(.system(size: displayMode == .menuBar ? 10 : 12, weight: .semibold))
                     .foregroundStyle(palette.secondaryText)
@@ -207,6 +207,25 @@ struct UsageDashboardView: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .frame(width: displayMode == .menuBar ? 108 : 120)
+
+                HStack(spacing: displayMode == .menuBar ? 6 : 8) {
+                    ForEach(AccountPlanFilter.allCases) { filter in
+                        Toggle(
+                            filter.title,
+                            isOn: Binding(
+                                get: { store.isPlanFilterEnabled(filter) },
+                                set: { isEnabled in
+                                    store.updatePlanFilter(filter, isEnabled: isEnabled)
+                                }
+                            )
+                        )
+                        .toggleStyle(.checkbox)
+                        .controlSize(.small)
+                        .font(.system(size: displayMode == .menuBar ? 10 : 12, weight: .semibold))
+                        .foregroundStyle(palette.secondaryText)
+                        .help("显示 \(filter.title) 类型账号")
+                    }
+                }
             }
 
             Spacer()
@@ -227,6 +246,10 @@ struct UsageDashboardView: View {
                 return "显示 \(displayedAccounts.count)/\(store.accounts.count) 个可用账号，当前使用 \(activeAccount.displayName)"
             }
 
+            if displayedAccounts.count != store.accounts.count {
+                return "显示 \(displayedAccounts.count)/\(store.accounts.count) 个账号，当前使用 \(activeAccount.displayName)"
+            }
+
             return "\(store.accounts.count) 个账号，当前使用 \(activeAccount.displayName)"
         }
 
@@ -234,6 +257,10 @@ struct UsageDashboardView: View {
             return store.isLaunchingLogin
                 ? "浏览器登录进行中"
                 : "显示 \(displayedAccounts.count)/\(store.accounts.count) 个可用账号"
+        }
+
+        if displayedAccounts.count != store.accounts.count {
+            return store.isLaunchingLogin ? "浏览器登录进行中" : "显示 \(displayedAccounts.count)/\(store.accounts.count) 个账号"
         }
 
         return store.isLaunchingLogin ? "浏览器登录进行中" : "\(store.accounts.count) 个账号"
@@ -316,7 +343,11 @@ struct UsageDashboardView: View {
                 : "会自动读取 `~/.codex` 里的已有账号。点击右上角“添加账号”即可直接走官方登录。"
         }
 
-        return "当前筛选为“可用账号”，但所有账号至少有一个额度窗口已经归零。你可以在底部切回“所有账号”查看完整信息。"
+        if store.accountVisibilityFilter == .availableAccounts {
+            return "当前筛选没有匹配账号。你可以在底部切回“所有账号”，或勾选更多账号类型查看完整信息。"
+        }
+
+        return "当前账号类型筛选没有匹配账号。请在底部勾选更多账号类型。"
     }
 
     /// 只有在“尚未添加任何账号”这类空状态下，才需要继续显示登录入口。
