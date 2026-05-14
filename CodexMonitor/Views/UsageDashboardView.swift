@@ -67,7 +67,7 @@ struct UsageDashboardView: View {
                         }
                     }
                     .padding(.horizontal, layout.horizontalPadding)
-                    .padding(.bottom, layout.bottomPadding)
+                    .padding(.bottom, displayMode == .menuBar ? 1 : layout.bottomPadding)
                 }
                 .scrollIndicators(displayMode == .menuBar ? .hidden : .automatic)
             }
@@ -84,14 +84,14 @@ struct UsageDashboardView: View {
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: layout.headerSpacing) {
             if displayMode == .menuBar {
-                HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .center, spacing: 7) {
                     Text("Codex 用量面板")
                         .font(.system(size: layout.titleFontSize, weight: .bold))
                         .foregroundStyle(palette.primaryText)
 
                     Spacer(minLength: 8)
 
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Button {
                             store.refreshAllAccounts()
                         } label: {
@@ -153,7 +153,7 @@ struct UsageDashboardView: View {
 
     /// 空状态面板。
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: displayMode == .menuBar ? 9 : 12) {
             Text(emptyStateTitle)
                 .font(.system(size: displayMode == .menuBar ? 16 : 18, weight: .bold))
                 .foregroundStyle(palette.primaryText)
@@ -172,7 +172,7 @@ struct UsageDashboardView: View {
                 .buttonStyle(.borderedProminent)
             }
         }
-        .padding(displayMode == .menuBar ? 16 : 20)
+        .padding(displayMode == .menuBar ? 13 : 20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(cardBackground)
         .overlay(
@@ -185,8 +185,8 @@ struct UsageDashboardView: View {
 
     /// 底部辅助信息。
     private var footerSection: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 8) {
+        HStack(spacing: displayMode == .menuBar ? 6 : 10) {
+            HStack(spacing: displayMode == .menuBar ? 6 : 8) {
                 Text("显示")
                     .font(.system(size: displayMode == .menuBar ? 10 : 12, weight: .semibold))
                     .foregroundStyle(palette.secondaryText)
@@ -206,9 +206,9 @@ struct UsageDashboardView: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(width: displayMode == .menuBar ? 108 : 120)
+                .frame(width: displayMode == .menuBar ? 98 : 120)
 
-                HStack(spacing: displayMode == .menuBar ? 6 : 8) {
+                HStack(spacing: displayMode == .menuBar ? 4 : 8) {
                     ForEach(AccountPlanFilter.allCases) { filter in
                         Toggle(
                             filter.title,
@@ -221,7 +221,7 @@ struct UsageDashboardView: View {
                         )
                         .toggleStyle(.checkbox)
                         .controlSize(.small)
-                        .font(.system(size: displayMode == .menuBar ? 10 : 12, weight: .semibold))
+                        .font(.system(size: displayMode == .menuBar ? 9 : 12, weight: .semibold))
                         .foregroundStyle(palette.secondaryText)
                         .help("显示 \(filter.title) 类型账号")
                     }
@@ -412,7 +412,7 @@ private struct AccountCardView: View {
     private var header: some View {
         Group {
             if displayMode == .menuBar {
-                HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .center, spacing: 6) {
                     Text(profile.displayName)
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(accountTitleColor)
@@ -534,7 +534,7 @@ private struct AccountCardView: View {
 
     /// 没有获取到数据时的占位提示。
     private var placeholderSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: displayMode == .menuBar ? 5 : 8) {
             Text(runtimeState.isRefreshing ? "正在拉取用量信息..." : "还没有拉取到数据")
                 .font(.system(size: displayMode == .menuBar ? 12 : 13, weight: .medium))
                 .foregroundStyle(palette.primaryText)
@@ -543,10 +543,10 @@ private struct AccountCardView: View {
                 .font(.system(size: displayMode == .menuBar ? 11 : 12))
                 .foregroundStyle(palette.secondaryText)
         }
-        .padding(displayMode == .menuBar ? 10 : 12)
+        .padding(displayMode == .menuBar ? 8 : 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(palette.placeholderBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: displayMode == .menuBar ? 8 : 12, style: .continuous))
     }
 
     /// 错误信息。
@@ -554,10 +554,10 @@ private struct AccountCardView: View {
         Text(message)
             .font(.system(size: 12, weight: .medium))
             .foregroundStyle(palette.errorText)
-            .padding(10)
+            .padding(displayMode == .menuBar ? 8 : 10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(palette.errorBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: displayMode == .menuBar ? 8 : 12, style: .continuous))
     }
 
     /// 底部更新时间。
@@ -599,7 +599,7 @@ private struct AccountCardView: View {
     /// 同时避免把不同语义的文本硬拼成一个字符串，后续扩展也更稳。
     @ViewBuilder
     private var footerStatusView: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: displayMode == .menuBar ? 5 : 6) {
             Text(updatedStatusText)
                 .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .medium))
                 .foregroundStyle(palette.secondaryText)
@@ -609,8 +609,8 @@ private struct AccountCardView: View {
                 Text(expiryDescriptor.text)
                     .font(.system(size: displayMode == .menuBar ? 9 : 10, weight: .bold))
                     .foregroundStyle(expiryDescriptor.textColor)
-                    .padding(.horizontal, displayMode == .menuBar ? 6 : 7)
-                    .padding(.vertical, displayMode == .menuBar ? 2 : 3)
+                    .padding(.horizontal, displayMode == .menuBar ? 5 : 7)
+                    .padding(.vertical, displayMode == .menuBar ? 1.5 : 3)
                     .background(expiryDescriptor.backgroundColor)
                     .clipShape(Capsule())
                     .lineLimit(1)
@@ -674,8 +674,8 @@ private struct AccountCardView: View {
         Text("当前使用")
             .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .bold))
             .foregroundStyle(palette.activeBadgeText)
-            .padding(.horizontal, displayMode == .menuBar ? 6 : 8)
-            .padding(.vertical, displayMode == .menuBar ? 2 : 4)
+            .padding(.horizontal, displayMode == .menuBar ? 5 : 8)
+            .padding(.vertical, displayMode == .menuBar ? 1.5 : 4)
             .background(palette.activeBadgeBackground)
             .overlay(
                 Capsule()
@@ -690,8 +690,8 @@ private struct AccountCardView: View {
         Text("不可用")
             .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .bold))
             .foregroundStyle(palette.unavailableBadgeText)
-            .padding(.horizontal, displayMode == .menuBar ? 6 : 8)
-            .padding(.vertical, displayMode == .menuBar ? 2 : 4)
+            .padding(.horizontal, displayMode == .menuBar ? 5 : 8)
+            .padding(.vertical, displayMode == .menuBar ? 1.5 : 4)
             .background(palette.unavailableBadgeBackground)
             .overlay(
                 Capsule()
@@ -706,8 +706,8 @@ private struct AccountCardView: View {
         return Text(compactPlanText(text))
             .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .bold))
             .foregroundStyle(style.textColor)
-            .padding(.horizontal, displayMode == .menuBar ? 6 : 8)
-            .padding(.vertical, displayMode == .menuBar ? 2 : 4)
+            .padding(.horizontal, displayMode == .menuBar ? 5 : 8)
+            .padding(.vertical, displayMode == .menuBar ? 1.5 : 4)
             .background(style.backgroundColor)
             .overlay(
                 Capsule()
@@ -758,8 +758,8 @@ private struct AccountCardView: View {
         Text("年度")
             .font(.system(size: displayMode == .menuBar ? 9 : 11, weight: .bold))
             .foregroundStyle(palette.annualBadgeText)
-            .padding(.horizontal, displayMode == .menuBar ? 6 : 8)
-            .padding(.vertical, displayMode == .menuBar ? 2 : 4)
+            .padding(.horizontal, displayMode == .menuBar ? 5 : 8)
+            .padding(.vertical, displayMode == .menuBar ? 1.5 : 4)
             .background(palette.annualBadgeBackground)
             .overlay(
                 Capsule()
@@ -771,7 +771,7 @@ private struct AccountCardView: View {
     /// 菜单栏紧凑模式下的操作按钮组。
     /// 默认隐藏但保留布局空间，鼠标移入时淡入，避免 hover 时卡片宽度和文字截断发生跳变。
     private var compactActionControls: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             if isActive == false {
                 Button("切换") {
                     switchAccountAndNotify()
@@ -926,7 +926,7 @@ private struct AccountCardView: View {
     /// hover 时稍微增强阴影，不改变布局尺寸，只增强层级。
     private var accountCardShadowColor: Color {
         if displayMode == .menuBar {
-            return Color.black.opacity(isHoveringCard ? 0.08 : 0.04)
+            return Color.black.opacity(isHoveringCard ? 0.06 : 0.025)
         }
 
         return Color.black.opacity(isHoveringCard ? 0.12 : 0.08)
@@ -935,10 +935,10 @@ private struct AccountCardView: View {
     /// 账号卡片阴影半径。
     private var accountCardShadowRadius: CGFloat {
         if isActive {
-            return displayMode == .menuBar ? (isHoveringCard ? 12 : 10) : (isHoveringCard ? 16 : 14)
+            return displayMode == .menuBar ? (isHoveringCard ? 8 : 6) : (isHoveringCard ? 16 : 14)
         }
 
-        return displayMode == .menuBar ? (isHoveringCard ? 9 : 6) : (isHoveringCard ? 14 : 12)
+        return displayMode == .menuBar ? (isHoveringCard ? 7 : 4) : (isHoveringCard ? 14 : 12)
     }
 
     /// 当前卡片是否不可用。
@@ -986,7 +986,7 @@ private struct AccountCardView: View {
         }
     }
 
-    /// 切换账号后立即提醒用户重启 Codex 客户端。
+    /// 切换账号后提醒用户 Codex App 已自动重启。
     private func switchAccountAndNotify() {
         guard onSwitch() else {
             return
@@ -995,7 +995,7 @@ private struct AccountCardView: View {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "已切换到 \(profile.displayName)"
-        alert.informativeText = "新的账号快照已经写回到 `~/.codex/auth.json`。请重启 Codex / Codex App，让客户端主进程重新读取登录态。"
+        alert.informativeText = "新的账号快照已经写回到 `~/.codex/auth.json`，Codex App 会自动重启以读取新的登录态。"
         alert.addButton(withTitle: "知道了")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
@@ -1088,7 +1088,7 @@ private struct CompactUsageWindowCard: View {
     let window: UsageWindowPresentation
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(compactTitle)
                     .font(.system(size: 10, weight: .semibold))
@@ -1098,7 +1098,7 @@ private struct CompactUsageWindowCard: View {
                 Spacer(minLength: 4)
 
                 Text("\(window.remainingPercent)%")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
                     .foregroundStyle(palette.primaryText)
             }
 
@@ -1112,18 +1112,18 @@ private struct CompactUsageWindowCard: View {
                         .frame(width: geometry.size.width * CGFloat(window.remainingPercent) / 100)
                 }
             }
-            .frame(height: 6)
+            .frame(height: 5)
 
             Text(formattedResetDate)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(palette.secondaryText)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(palette.metricCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var formattedResetDate: String {
@@ -1189,19 +1189,19 @@ private struct DashboardLayout {
             cardCornerRadius = 18
             cardHeight = nil
         case .menuBar:
-            topPadding = 8
-            bottomPadding = 6
-            horizontalPadding = 9
-            outerSpacing = 7
-            headerSpacing = 5
-            cardSpacing = 4
+            topPadding = 7
+            bottomPadding = 4
+            horizontalPadding = 8
+            outerSpacing = 4
+            headerSpacing = 4
+            cardSpacing = 2
             titleFontSize = 16
             subtitleFontSize = 10
-            cardPadding = 7
-            sectionSpacing = 3
-            metricSpacing = 5
-            cardCornerRadius = 14
-            cardHeight = 116
+            cardPadding = 6
+            sectionSpacing = 2
+            metricSpacing = 4
+            cardCornerRadius = 10
+            cardHeight = 98
         }
     }
 }
@@ -1210,24 +1210,24 @@ private struct DashboardLayout {
 /// 这里统一使用动态颜色，保证浅色 / 暗色模式下都能保持足够的层级和可读性。
 private struct DashboardPalette {
     let panelBackground = DashboardPalette.dynamicColor(
-        light: DashboardPalette.rgb(0.90, 0.89, 0.85),
+        light: DashboardPalette.rgb(0.94, 0.945, 0.95),
         dark: DashboardPalette.rgb(0.12, 0.12, 0.13)
     )
 
     let cardBackground = DashboardPalette.dynamicColor(
-        light: DashboardPalette.rgb(0.965, 0.955, 0.935),
+        light: DashboardPalette.rgb(0.985, 0.985, 0.975),
         dark: DashboardPalette.rgb(0.17, 0.17, 0.18)
     )
     let cardHoverBackground = DashboardPalette.dynamicColor(
-        light: DashboardPalette.rgb(0.985, 0.975, 0.945),
+        light: DashboardPalette.rgb(1.00, 1.00, 0.99),
         dark: DashboardPalette.rgb(0.22, 0.22, 0.24)
     )
     let unavailableCardBackground = DashboardPalette.dynamicColor(
-        light: DashboardPalette.rgb(0.925, 0.920, 0.900),
+        light: DashboardPalette.rgb(0.95, 0.95, 0.94),
         dark: DashboardPalette.rgb(0.145, 0.145, 0.150)
     )
     let unavailableCardHoverBackground = DashboardPalette.dynamicColor(
-        light: DashboardPalette.rgb(0.945, 0.935, 0.905),
+        light: DashboardPalette.rgb(0.965, 0.96, 0.94),
         dark: DashboardPalette.rgb(0.185, 0.180, 0.170)
     )
     let metricCardBackground = DashboardPalette.dynamicColor(
@@ -1235,11 +1235,11 @@ private struct DashboardPalette {
         dark: DashboardPalette.rgb(0.10, 0.11, 0.12)
     )
     let placeholderBackground = DashboardPalette.dynamicColor(
-        light: DashboardPalette.rgb(0.92, 0.92, 0.90),
+        light: DashboardPalette.rgb(0.93, 0.94, 0.945),
         dark: DashboardPalette.rgb(0.19, 0.20, 0.21)
     )
     let mutedBackground = DashboardPalette.dynamicColor(
-        light: DashboardPalette.rgb(0.87, 0.88, 0.85),
+        light: DashboardPalette.rgb(0.88, 0.90, 0.91),
         dark: DashboardPalette.rgb(0.23, 0.24, 0.25)
     )
     let cardBorder = DashboardPalette.dynamicColor(

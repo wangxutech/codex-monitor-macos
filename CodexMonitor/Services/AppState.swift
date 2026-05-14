@@ -5,6 +5,7 @@
 //  Created by Codex on 2026/4/13.
 //
 
+import AppKit
 import Foundation
 
 /// 账号列表的显示范围筛选。
@@ -76,7 +77,7 @@ final class AppState: ObservableObject {
     private let authStore: CodexAuthStore
     private let api: CodexUsageAPI
     private let subscriptionRefreshInterval: TimeInterval = 12 * 60 * 60
-    private let automaticRefreshIntervalSeconds: UInt64 = 60
+    private let automaticRefreshIntervalSeconds: UInt64 = 5 * 60
     private let loginWatchIntervalSeconds: UInt64 = 2
     private let loginWatchTimeoutSeconds: TimeInterval = 180
 
@@ -189,7 +190,11 @@ final class AppState: ObservableObject {
         cancelLogin()
 
         let baselineFingerprint = try authStore.activeAuthFingerprint()
-        let process = try authStore.startCodexLoginProcess(deviceAuth: deviceAuth)
+        let process = try authStore.startCodexLoginProcess(deviceAuth: deviceAuth) { url in
+            Task { @MainActor in
+                NSWorkspace.shared.open(url)
+            }
+        }
         loginProcess = process
         startLoginWatchLoop(baselineFingerprint: baselineFingerprint, process: process)
     }
@@ -219,16 +224,43 @@ final class AppState: ObservableObject {
     }
 
     /// 切换账号。
-    /// 切换完成后只更新 `~/.codex/auth.json` 与 `registry.json`；
-    /// 是否立即对 Codex 客户端生效，仍然取决于用户是否重启 Codex / Codex App。
+    /// 切换完成后写回 `~/.codex/auth.json` 与 `registry.json`，
+    /// 并自动重启 Codex App，让客户端主进程重新读取登录态。
     func switchAccount(_ accountKey: String) throws {
         try authStore.switchToAccount(accountKey: accountKey)
         reloadFromDisk(syncActiveAuth: false)
+        restartCodexAppAfterAccountSwitch()
 
         // 切换后立即尝试补一次工作区名称。
         // 这和 `codex-auth switch` 切换后基于新活动账号继续刷名字的体验保持一致。
         Task {
             await self.refreshActiveAccountNamesIfNeeded()
+        }
+    }
+
+    /// 自动重启官方 Codex App。
+    /// 这里只处理 macOS 原生 App；Codex CLI 进程不在这里强杀，避免中断用户正在运行的终端任务。
+    private func restartCodexAppAfterAccountSwitch() {
+        let bundleIdentifier = "com.openai.codex"
+        let workspace = NSWorkspace.shared
+
+        let runningCodexApps = workspace.runningApplications.filter { application in
+            application.bundleIdentifier == bundleIdentifier
+        }
+        let appURL = workspace.urlForApplication(withBundleIdentifier: bundleIdentifier) ??
+            URL(fileURLWithPath: "/Applications/Codex.app", isDirectory: true)
+
+        for application in runningCodexApps {
+            application.terminate()
+        }
+
+        Task { @MainActor in
+            let delayNanoseconds: UInt64 = runningCodexApps.isEmpty ? 200_000_000 : 1_200_000_000
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            _ = try? await workspace.openApplication(at: appURL, configuration: configuration)
         }
     }
 

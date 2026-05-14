@@ -1,6 +1,8 @@
 # Xcode 构建产物
 Build/
 DerivedData/
+dist/
+.DS_Store
 
 # Xcode 用户级配置
 *.xcuserstate

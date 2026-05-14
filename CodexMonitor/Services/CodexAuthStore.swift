@@ -215,8 +215,12 @@ final class CodexAuthStore {
     /// 1. 用户只需要看到浏览器登录页，不应该被额外弹出的终端窗口打断。
     /// 2. 返回 `Process` 句柄给 `AppState`，这样菜单栏可以提供“取消登录”，避免失败登录一直卡在登录中。
     /// 3. 使用 login shell + 常见 Homebrew 路径，尽量复用用户本机已经安装好的 `codex` 命令。
-    func startCodexLoginProcess(deviceAuth: Bool) throws -> Process {
+    func startCodexLoginProcess(
+        deviceAuth: Bool,
+        onLoginURL: @escaping (URL) -> Void
+    ) throws -> Process {
         let codexHome = try resolveCodexHome()
+        let realHome = resolveRealUserHomeDirectory() ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         try ensureCodexHomeExists()
 
         let process = Process()
@@ -224,24 +228,44 @@ final class CodexAuthStore {
 
         let loginArguments = deviceAuth ? " --device-auth" : ""
         let command = """
+        export HOME=\(shellSingleQuoted(realHome.path))
         export CODEX_HOME=\(shellSingleQuoted(codexHome.path))
-        export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-        exec codex login\(loginArguments)
+        export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/.volta/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+        CODEX_BIN=""
+        for candidate in "$HOME/.npm-global/bin/codex" "$HOME/.local/bin/codex" "$HOME/.bun/bin/codex" "$HOME/.cargo/bin/codex" "$HOME/.volta/bin/codex" "/opt/homebrew/bin/codex" "/usr/local/bin/codex"; do
+          if [ -x "$candidate" ] && "$candidate" --version >/dev/null 2>&1; then
+            CODEX_BIN="$candidate"
+            break
+          fi
+        done
+        if [ -z "$CODEX_BIN" ] && command -v codex >/dev/null 2>&1 && codex --version >/dev/null 2>&1; then
+          CODEX_BIN="$(command -v codex)"
+        fi
+        if [ -z "$CODEX_BIN" ]; then
+          echo "CodexMonitor: 未找到可用的 codex 命令。请先安装或修复官方 Codex CLI。" >&2
+          exit 127
+        fi
+        exec "$CODEX_BIN" login\(loginArguments)
         """
         process.arguments = ["-lc", command]
 
         // 后台进程没有用户可见终端，标准输入直接接到空设备，避免命令意外等待键盘输入。
         process.standardInput = FileHandle.nullDevice
 
-        // `codex login` 正常会直接打开浏览器，但仍可能输出日志。
-        // 如果完全不读取 Pipe，系统管道缓冲区被写满后子进程会阻塞，因此这里用可读回调静默丢弃输出。
+        // `codex login` 通常会自己打开浏览器。这里持续读取管道避免阻塞，
+        // 但只有当 CLI 明确报告“浏览器打开失败”时，才把登录 URL 交给 App 兜底打开。
         let outputPipe = Pipe()
         let errorPipe = Pipe()
+        let loginURLScanner = CodexLoginFallbackURLScanner()
         outputPipe.fileHandleForReading.readabilityHandler = { handle in
-            _ = handle.availableData
+            if let url = loginURLScanner.append(handle.availableData) {
+                onLoginURL(url)
+            }
         }
         errorPipe.fileHandleForReading.readabilityHandler = { handle in
-            _ = handle.availableData
+            if let url = loginURLScanner.append(handle.availableData) {
+                onLoginURL(url)
+            }
         }
         process.standardOutput = outputPipe
         process.standardError = errorPipe
@@ -655,6 +679,98 @@ final class CodexAuthStore {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
+}
+
+private final class CodexLoginFallbackURLScanner {
+    private let lock = NSLock()
+    private var buffer = ""
+    private var didFindURL = false
+
+    func append(_ data: Data) -> URL? {
+        guard data.isEmpty == false,
+              let text = String(data: data, encoding: .utf8),
+              text.isEmpty == false else {
+            return nil
+        }
+
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+
+        guard didFindURL == false else {
+            return nil
+        }
+
+        buffer += text
+        if buffer.count > 8_000 {
+            buffer = String(buffer.suffix(8_000))
+        }
+
+        guard Self.containsBrowserOpenFailure(in: buffer),
+              let url = Self.extractFirstExternalLoginURL(from: buffer) else {
+            return nil
+        }
+
+        didFindURL = true
+        return url
+    }
+
+    private static func extractFirstExternalLoginURL(from text: String) -> URL? {
+        let pattern = #"https?://[^\s<>"']+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+
+        let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        let matches = regex.matches(in: text, range: fullRange)
+        let trailingPunctuation = CharacterSet(charactersIn: ".,;:)]}")
+
+        for match in matches {
+            guard let matchRange = Range(match.range, in: text) else {
+                continue
+            }
+
+            let rawURL = String(text[matchRange])
+                .trimmingCharacters(in: trailingPunctuation)
+            guard let url = URL(string: rawURL),
+                  isExternalLoginURL(url) else {
+                continue
+            }
+
+            return url
+        }
+
+        return nil
+    }
+
+    private static func containsBrowserOpenFailure(in text: String) -> Bool {
+        let normalized = text.lowercased()
+        return normalized.contains("failed to open browser")
+            || normalized.contains("failed to open login url")
+            || normalized.contains("failed to open browser for login url")
+    }
+
+    private static func isExternalLoginURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased() else {
+            return false
+        }
+
+        if host == "localhost" ||
+            host == "127.0.0.1" ||
+            host == "::1" ||
+            host.hasSuffix(".localhost") {
+            return false
+        }
+
+        return host == "auth.openai.com" ||
+            host.hasSuffix(".auth.openai.com") ||
+            host == "chatgpt.com" ||
+            host.hasSuffix(".chatgpt.com") ||
+            host == "openai.com" ||
+            host.hasSuffix(".openai.com")
+    }
 }
 
 enum CodexAuthStoreError: LocalizedError {
