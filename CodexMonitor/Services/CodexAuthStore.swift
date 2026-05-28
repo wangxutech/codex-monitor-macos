@@ -223,31 +223,19 @@ final class CodexAuthStore {
         let realHome = resolveRealUserHomeDirectory() ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         try ensureCodexHomeExists()
 
+        let codexExecutableURL = try resolveCodexExecutableURL(realHome: realHome)
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.executableURL = codexExecutableURL
+        process.arguments = deviceAuth ? ["login", "--device-auth"] : ["login"]
 
-        let loginArguments = deviceAuth ? " --device-auth" : ""
-        let command = """
-        export HOME=\(shellSingleQuoted(realHome.path))
-        export CODEX_HOME=\(shellSingleQuoted(codexHome.path))
-        export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/.volta/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-        CODEX_BIN=""
-        for candidate in "$HOME/.npm-global/bin/codex" "$HOME/.local/bin/codex" "$HOME/.bun/bin/codex" "$HOME/.cargo/bin/codex" "$HOME/.volta/bin/codex" "/opt/homebrew/bin/codex" "/usr/local/bin/codex"; do
-          if [ -x "$candidate" ] && "$candidate" --version >/dev/null 2>&1; then
-            CODEX_BIN="$candidate"
-            break
-          fi
-        done
-        if [ -z "$CODEX_BIN" ] && command -v codex >/dev/null 2>&1 && codex --version >/dev/null 2>&1; then
-          CODEX_BIN="$(command -v codex)"
-        fi
-        if [ -z "$CODEX_BIN" ]; then
-          echo "CodexMonitor: 未找到可用的 codex 命令。请先安装或修复官方 Codex CLI。" >&2
-          exit 127
-        fi
-        exec "$CODEX_BIN" login\(loginArguments)
-        """
-        process.arguments = ["-lc", command]
+        // 菜单栏 App 由 launchd 启动时拿不到用户终端里的完整环境变量。
+        // 这里显式补齐 HOME、CODEX_HOME 和常见 CLI 路径，保证官方 Codex CLI 读写真实用户目录，
+        // 同时保留用户原有 PATH，避免影响通过包管理器安装的自定义 codex 可执行文件。
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = realHome.path
+        environment["CODEX_HOME"] = codexHome.path
+        environment["PATH"] = codexLoginSearchPath(realHome: realHome, inheritedPath: environment["PATH"])
+        process.environment = environment
 
         // 后台进程没有用户可见终端，标准输入直接接到空设备，避免命令意外等待键盘输入。
         process.standardInput = FileHandle.nullDevice
@@ -274,8 +262,15 @@ final class CodexAuthStore {
             // 进程退出后清理回调，避免 FileHandle 持续持有闭包。
             (process.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
             (process.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+
+            if process.terminationStatus == 0 {
+                NSLog("CodexMonitor: codex login 进程正常退出。")
+            } else {
+                NSLog("CodexMonitor: codex login 进程异常退出，状态码：%d。", process.terminationStatus)
+            }
         }
 
+        NSLog("CodexMonitor: 启动 codex login，CLI 路径：%@，CODEX_HOME：%@", codexExecutableURL.path, codexHome.path)
         try process.run()
         return process
     }
@@ -440,6 +435,97 @@ final class CodexAuthStore {
     private func ensureCodexHomeExists() throws {
         let codexHome = try resolveCodexHome()
         try fileManager.createDirectory(at: codexHome, withIntermediateDirectories: true)
+    }
+
+    /// 解析可用的官方 Codex CLI。
+    /// 之前只依赖 shell 脚本在 Homebrew / npm / cargo 等路径中查找 `codex`，但菜单栏 App 的运行环境
+    /// 往往没有用户终端里的 PATH；如果用户只安装了官方 Codex.app，真实 CLI 会位于 App bundle 内部，
+    /// 这时点击“添加账号”会启动一个立即退出的后台进程，界面上就表现为没有响应。
+    /// 因此这里在 Swift 层提前解析并校验可执行文件，找不到时直接抛出可展示的错误。
+    private func resolveCodexExecutableURL(realHome: URL) throws -> URL {
+        let searchPath = codexLoginSearchPath(realHome: realHome, inheritedPath: ProcessInfo.processInfo.environment["PATH"])
+        let bundledCandidatePaths = [
+            "\(realHome.path)/.npm-global/bin/codex",
+            "\(realHome.path)/.local/bin/codex",
+            "\(realHome.path)/.bun/bin/codex",
+            "\(realHome.path)/.cargo/bin/codex",
+            "\(realHome.path)/.volta/bin/codex",
+            "/Applications/Codex.app/Contents/Resources/codex",
+            "/opt/homebrew/bin/codex",
+            "/usr/local/bin/codex"
+        ]
+
+        for candidatePath in bundledCandidatePaths {
+            if isExecutableFile(atPath: candidatePath) {
+                return URL(fileURLWithPath: candidatePath, isDirectory: false)
+            }
+        }
+
+        if let pathCandidate = findExecutable(named: "codex", inSearchPath: searchPath) {
+            return pathCandidate
+        }
+
+        throw CodexAuthStoreError.missingCodexCLI("未找到可用的 codex 命令。请确认已安装官方 Codex App 或 Codex CLI。")
+    }
+
+    /// 生成登录子进程使用的 PATH。
+    /// 这个方法集中维护常见安装路径，避免启动命令、查找命令和后续排障日志各自拼一份路径导致不一致。
+    private func codexLoginSearchPath(realHome: URL, inheritedPath: String?) -> String {
+        let preferredPaths = [
+            "\(realHome.path)/.npm-global/bin",
+            "\(realHome.path)/.local/bin",
+            "\(realHome.path)/.bun/bin",
+            "\(realHome.path)/.cargo/bin",
+            "\(realHome.path)/.volta/bin",
+            "/Applications/Codex.app/Contents/Resources",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ]
+        let inheritedPaths = inheritedPath?
+            .split(separator: ":")
+            .map(String.init) ?? []
+
+        var seenPaths = Set<String>()
+        return (preferredPaths + inheritedPaths)
+            .filter { path in
+                let normalized = path.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard normalized.isEmpty == false, seenPaths.contains(normalized) == false else {
+                    return false
+                }
+                seenPaths.insert(normalized)
+                return true
+            }
+            .joined(separator: ":")
+    }
+
+    /// 在给定 PATH 中查找可执行文件。
+    /// 不通过 shell 的原因是菜单栏 App 内执行 login shell 的行为依赖用户配置文件，失败时也不容易把错误同步回 UI。
+    private func findExecutable(named executableName: String, inSearchPath searchPath: String) -> URL? {
+        for directoryPath in searchPath.split(separator: ":").map(String.init) {
+            let candidatePath = URL(fileURLWithPath: directoryPath, isDirectory: true)
+                .appendingPathComponent(executableName, isDirectory: false)
+                .path
+            if isExecutableFile(atPath: candidatePath) {
+                return URL(fileURLWithPath: candidatePath, isDirectory: false)
+            }
+        }
+
+        return nil
+    }
+
+    /// 判断路径是否是普通可执行文件，排除同名目录等异常情况。
+    private func isExecutableFile(atPath path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue == false else {
+            return false
+        }
+
+        return fileManager.isExecutableFile(atPath: path)
     }
 
     /// 直接把某个快照切到当前 `auth.json`。
@@ -777,6 +863,7 @@ enum CodexAuthStoreError: LocalizedError {
     case invalidCodexHome(String)
     case invalidAuthFile(String)
     case missingAccount(String)
+    case missingCodexCLI(String)
     case unsupportedAuthMode(String)
 
     var errorDescription: String? {
@@ -784,6 +871,7 @@ enum CodexAuthStoreError: LocalizedError {
         case .invalidCodexHome(let message),
              .invalidAuthFile(let message),
              .missingAccount(let message),
+             .missingCodexCLI(let message),
              .unsupportedAuthMode(let message):
             return message
         }

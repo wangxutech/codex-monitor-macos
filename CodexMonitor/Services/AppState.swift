@@ -71,6 +71,7 @@ final class AppState: ObservableObject {
     @Published private(set) var menuBarTitle = "Codex"
     @Published private(set) var codexHomePath = "~/.codex"
     @Published private(set) var isLaunchingLogin = false
+    @Published private(set) var loginErrorMessage: String?
     @Published private(set) var accountVisibilityFilter: AccountVisibilityFilter = .allAccounts
     @Published private(set) var enabledPlanFilters = Set(AccountPlanFilter.allCases)
 
@@ -188,6 +189,7 @@ final class AppState: ObservableObject {
         // 新登录开始前先停止旧登录流程。
         // 这样即使上一次浏览器授权被用户关闭，也不会因为旧进程或旧监视任务残留而无法重新登录。
         cancelLogin()
+        loginErrorMessage = nil
 
         let baselineFingerprint = try authStore.activeAuthFingerprint()
         let process = try authStore.startCodexLoginProcess(deviceAuth: deviceAuth) { url in
@@ -196,6 +198,7 @@ final class AppState: ObservableObject {
             }
         }
         loginProcess = process
+        NSLog("CodexMonitor: 已创建登录监视任务，等待 auth.json 变化。")
         startLoginWatchLoop(baselineFingerprint: baselineFingerprint, process: process)
     }
 
@@ -212,6 +215,12 @@ final class AppState: ObservableObject {
         isLaunchingLogin = false
     }
 
+    /// 清理已经展示过的登录错误。
+    /// 视图层通过这个入口确认错误已经被用户看到，避免 SwiftUI 状态刷新时重复弹出同一条提示。
+    func clearLoginErrorMessage() {
+        loginErrorMessage = nil
+    }
+
     /// 用户完成登录后，主动同步当前 `auth.json` 到 registry，并刷新活动账号的展示数据。
     func synchronizeCurrentLoginResult() async throws {
         let registry = try authStore.synchronizeActiveAuthIntoRegistry()
@@ -225,42 +234,17 @@ final class AppState: ObservableObject {
 
     /// 切换账号。
     /// 切换完成后写回 `~/.codex/auth.json` 与 `registry.json`，
-    /// 并自动重启 Codex App，让客户端主进程重新读取登录态。
+    /// 但不会主动退出或重启官方 Codex App。
+    /// 这样可以避免用户正在 Codex App 中执行任务时，被账号切换操作意外中断。
+    /// 如果 Codex App 需要重新读取登录态，应由用户在合适时机手动重启。
     func switchAccount(_ accountKey: String) throws {
         try authStore.switchToAccount(accountKey: accountKey)
         reloadFromDisk(syncActiveAuth: false)
-        restartCodexAppAfterAccountSwitch()
 
         // 切换后立即尝试补一次工作区名称。
         // 这和 `codex-auth switch` 切换后基于新活动账号继续刷名字的体验保持一致。
         Task {
             await self.refreshActiveAccountNamesIfNeeded()
-        }
-    }
-
-    /// 自动重启官方 Codex App。
-    /// 这里只处理 macOS 原生 App；Codex CLI 进程不在这里强杀，避免中断用户正在运行的终端任务。
-    private func restartCodexAppAfterAccountSwitch() {
-        let bundleIdentifier = "com.openai.codex"
-        let workspace = NSWorkspace.shared
-
-        let runningCodexApps = workspace.runningApplications.filter { application in
-            application.bundleIdentifier == bundleIdentifier
-        }
-        let appURL = workspace.urlForApplication(withBundleIdentifier: bundleIdentifier) ??
-            URL(fileURLWithPath: "/Applications/Codex.app", isDirectory: true)
-
-        for application in runningCodexApps {
-            application.terminate()
-        }
-
-        Task { @MainActor in
-            let delayNanoseconds: UInt64 = runningCodexApps.isEmpty ? 200_000_000 : 1_200_000_000
-            try? await Task.sleep(nanoseconds: delayNanoseconds)
-
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.activates = true
-            _ = try? await workspace.openApplication(at: appURL, configuration: configuration)
         }
     }
 
@@ -571,7 +555,15 @@ final class AppState: ObservableObject {
                 // 如果官方登录命令已经退出，但 auth.json 没有变化，说明用户大概率取消或登录失败。
                 // 此时直接结束“登录中”，让用户可以立即再次点击“添加账号”，而不是等满超时时间。
                 if process.isRunning == false {
-                    _ = await completeLoginIfAuthChanged(baselineFingerprint: baselineFingerprint)
+                    let didCompleteLogin = await completeLoginIfAuthChanged(baselineFingerprint: baselineFingerprint)
+                    if didCompleteLogin == false, process.terminationStatus != 0 {
+                        await MainActor.run {
+                            if self.loginProcess === process {
+                                self.loginErrorMessage = "codex login 进程异常退出，状态码：\(process.terminationStatus)。请确认 Codex App 或 Codex CLI 可以正常执行。"
+                                NSLog("CodexMonitor: 登录流程失败，auth.json 未变化，codex login 状态码：%d。", process.terminationStatus)
+                            }
+                        }
+                    }
                     break
                 }
             }
@@ -598,6 +590,7 @@ final class AppState: ObservableObject {
             let registry = try authStore.synchronizeActiveAuthIntoRegistry()
             applyRegistry(registry)
             await refreshActiveAccountNamesIfNeeded()
+            NSLog("CodexMonitor: 检测到 auth.json 已更新，已同步新登录结果。")
 
             if let activeAccountKey {
                 await refreshAccount(activeAccountKey)

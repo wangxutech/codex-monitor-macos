@@ -77,6 +77,14 @@ struct UsageDashboardView: View {
         .padding(.top, layout.topPadding)
         .padding(.bottom, layout.bottomPadding)
         .background(panelBackground)
+        .onChange(of: store.loginErrorMessage) { message in
+            guard let message else {
+                return
+            }
+
+            showOperationErrorAlert(message: message)
+            store.clearLoginErrorMessage()
+        }
     }
 
     /// 顶部摘要与快捷操作。
@@ -289,6 +297,8 @@ struct UsageDashboardView: View {
 
     /// 直接触发官方浏览器登录。
     /// 菜单栏里只保留一个入口，避免再弹独立编辑窗口增加理解成本。
+    /// 如果底层启动失败，这里会立即弹出错误；如果子进程启动后异常退出，则由 AppState
+    /// 通过 `loginErrorMessage` 回传给上面的 `onChange`，避免用户看到“点击后没有响应”。
     private func launchLogin() {
         do {
             try store.launchLogin(deviceAuth: false)
